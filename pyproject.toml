@@ -1,0 +1,34 @@
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+    "cmake>=3.20",
+    "ninja",
+    "pybind11>=2.11",
+    "dpctl"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigmo"
+version = "0.0.1"
+description = "Python bindings for SIGMo using dpctl and pybind11"
+authors = [
+    { name = "Giacomo Favale" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "dpctl",
+    "pytest"
+]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:.*dpctl\\.tensor is deprecated.*:DeprecationWarning",
+]
