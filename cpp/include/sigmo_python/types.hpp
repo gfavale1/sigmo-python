@@ -78,23 +78,44 @@ namespace sigmo_python
      */
     struct FilterCandidatesStats
     {
-        /// Numero totale di grafi contenuti nel dataset di query. 
+        /// Numero totale di grafi contenuti nel dataset di query.
         std::uint32_t num_query_graphs;
 
-        /// Numero totale di grafi contenuti nel dataset target (data). 
+        /// Numero totale di grafi contenuti nel dataset target (data).
         std::uint32_t num_data_graphs;
 
-        /// Somma totale dei nodi presenti in tutti i grafi query processati. 
+        /// Somma totale dei nodi presenti in tutti i grafi query processati.
         std::size_t total_query_nodes;
 
-        /// Somma totale dei nodi presenti in tutti i grafi target (data) processati. 
+        /// Somma totale dei nodi presenti in tutti i grafi target (data) processati.
         std::size_t total_data_nodes;
 
         /// Rappresenta il numero totale di bit impostati a 1 nella matrice dei candidati dopo l'esecuzione del kernel di filtraggio.
         std::size_t total_candidates;
 
-
         /// Indica la quantità di memoria USM utilizzata per memorizzare le matrici dei candidati e le strutture dati ausiliarie durante il processo.
+        std::size_t allocated_bytes;
+    };
+
+    /**
+     * @brief Statistiche e metadati risultanti dall'operazione di refine dei candidati.
+     *
+     * Questa struttura aggrega le informazioni raccolte durante l'esecuzione della pipeline
+     * di refine su GPU, includendo le dimensioni del dataset processato, il conteggio
+     * totale dei candidati identificati e l'impatto sulla memoria USM (Unified Shared Memory).
+     */
+    struct RefineCandidatesStats
+    {
+        std::uint32_t num_query_graphs;
+
+        std::uint32_t num_data_graphs;
+
+        std::size_t total_query_nodes;
+
+        std::size_t total_data_nodes;
+
+        std::size_t total_candidates;
+
         std::size_t allocated_bytes;
     };
 } // namespace sigmo_python

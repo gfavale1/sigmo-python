@@ -355,4 +355,85 @@ namespace sigmo_python
 
         return stats;
     }
+
+    RefineCandidatesStats refine_candidates(
+        sycl::queue &q,
+        const std::vector<HostCSRGraphInput> &query_input,
+        const std::vector<HostCSRGraphInput> &data_input,
+        sigmo::signature::Signature<> &signatures,
+        sigmo::candidates::Candidates &candidates)
+    {
+        if (query_input.empty() || data_input.empty())
+        {
+            throw InvalidGraphInputError("Filter aborted: query or data input is empty");
+        }
+
+        auto csr_q = to_sigmo_csr_graphs(query_input);
+        auto csr_d = to_sigmo_csr_graphs(data_input);
+
+        sigmo::DeviceBatchedCSRGraph dev_q, dev_d;
+        try
+        {
+            dev_q = sigmo::createDeviceCSRGraph(q, csr_q);
+            dev_d = sigmo::createDeviceCSRGraph(q, csr_d);
+        }
+        catch (const std::bad_alloc &)
+        {
+            throw OutOfDeviceMemoryError("GPU Memory exhausted during graph upload for filtering");
+        }
+
+        sigmo::signature::Signature<> local_sig(q, dev_d.total_nodes, dev_q.total_nodes);
+        uint64_t total_candidates = 0;
+
+        try
+        {
+            local_sig.generateQuerySignatures(dev_q).wait();
+            local_sig.generateDataSignatures(dev_d).wait();
+            local_sig.refineQuerySignatures(dev_q).wait();
+            local_sig.refineDataSignatures(dev_d).
+            wait();
+
+            auto event = sigmo::isomorphism::filter::refineCandidates<sigmo::CandidatesDomain::Query>(
+                q, dev_q, dev_d, local_sig, candidates);
+            event.wait();
+            q.wait_and_throw();
+
+            // Trasferimento e Popcount dei risultati
+            auto cand_dev = candidates.getCandidatesDevice();
+            if (cand_dev.candidates != nullptr)
+            {
+                const std::size_t total_words = cand_dev.source_nodes * cand_dev.single_node_size;
+                std::vector<sigmo::types::candidates_t> host_buffer(total_words);
+
+                q.copy(cand_dev.candidates, host_buffer.data(), total_words).wait();
+
+                for (auto word : host_buffer)
+                {
+                    total_candidates += __builtin_popcountll(static_cast<unsigned long long>(word));
+                }
+            }
+        }
+        catch (const sycl::exception &e)
+        {
+            sigmo::destroyDeviceCSRGraph(dev_q, q);
+            sigmo::destroyDeviceCSRGraph(dev_d, q);
+            throw DeviceRuntimeError(std::string("Filter Kernel failed: ") + e.what());
+        }
+
+        uint32_t allocated_bytes = static_cast<uint32_t>(candidates.getAllocationSize());
+        RefineCandidatesStats stats{
+            static_cast<uint32_t>(dev_q.num_graphs),
+            static_cast<uint32_t>(dev_d.num_graphs),
+            static_cast<size_t>(dev_q.total_nodes),
+            static_cast<size_t>(dev_d.total_nodes),
+            static_cast<size_t>(total_candidates),
+            allocated_bytes};
+
+        sigmo::destroyDeviceCSRGraph(dev_q, q);
+        sigmo::destroyDeviceCSRGraph(dev_d, q);
+        q.wait_and_throw();
+
+        return stats;
+    }
+
 } // namespace sigmo_python

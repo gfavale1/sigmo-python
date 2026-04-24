@@ -24,3 +24,7 @@ egg-info/
 
 *.log
 benchmarks/datasets/*.smarts
+benchmarks/README.md
+benchmarks/ZINC_URLS
+
+.gitignore

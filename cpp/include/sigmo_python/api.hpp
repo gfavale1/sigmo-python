@@ -9,8 +9,8 @@
 
 #include "device.hpp"
 #include "types.hpp"
-#include "graph.hpp"     
-#include "signature.hpp"  
+#include "graph.hpp"
+#include "signature.hpp"
 #include "candidates.hpp"
 /**
  * @namespace sigmo_python
@@ -74,10 +74,7 @@ namespace sigmo_python
         const sycl::device &dev,
         const std::vector<HostCSRGraphInput> &graphs,
         const std::string &scope,
-        std::size_t view_size
-    );
-
-
+        std::size_t view_size);
 
     /**
      * @brief Esegue il filtro dei candidati seguendo la stessa struttura della
@@ -102,6 +99,31 @@ namespace sigmo_python
         const std::vector<HostCSRGraphInput> &query_graph,
         const std::vector<HostCSRGraphInput> &data_graph,
         sigmo::signature::Signature<> &signatures,
-        sigmo::candidates::Candidates &candidates
-    );
+        sigmo::candidates::Candidates &candidates);
+
+    /**
+     * @brief Esegue il refine dei candidati seguendo la stessa struttura della
+     *        `sigmo::isomorphism::filter::refineCandidates` originale.
+     *
+     * Il chiamante fornisce esplicitamente queue, signatures e struttura dei
+     * candidati, mentre il wrapper si occupa di convertire i grafi host-side
+     * del binding nei `DeviceBatchedCSRGraph` richiesti dalla libreria SIGMo.
+     *
+     * @param queue Queue SYCL usata per l'esecuzione.
+     * @param query_graph Batch di grafi query nel formato HostCSRGraphInput.
+     * @param data_graph Batch di grafi data nel formato HostCSRGraphInput.
+     * @param signatures Oggetto SIGMo che contiene le firme query/data gia'
+     *                   allocate dal chiamante.
+     * @param candidates Oggetto SIGMo che contiene la struttura device dei
+     *                   candidati gia' allocata dal chiamante.
+     *
+     * @return Statistiche aggregate sull'esecuzione della refine.
+     */
+
+    RefineCandidatesStats refine_candidates(
+        sycl::queue &queue,
+        const std::vector<HostCSRGraphInput> &query_graph,
+        const std::vector<HostCSRGraphInput> &data_graph,
+        sigmo::signature::Signature<> &signatures,
+        sigmo::candidates::Candidates &candidates);
 } // namespace sigmo_python

@@ -9,6 +9,7 @@ from ._core import (
     filter_candidates,
     Signature,
     Candidates,
+    refine_candidates,
 )
 
 # __all__ definisce l'interfaccia pubblica del package.
@@ -22,4 +23,5 @@ __all__ = [
     "filter_candidates",
     "Signature",
     "Candidates",
+    "refine_candidates",
 ]

@@ -1,0 +1,3 @@
+[submodule "external/sigmo"]
+	path = external/sigmo
+    url = https://github.com/antonio-decaro/SIGMo

@@ -102,4 +102,22 @@ PYBIND11_MODULE(_core, m)
         out["candidates_count"] = (uint64_t)stats.total_candidates;
         out["allocated_bytes"] = (uint64_t)stats.allocated_bytes;
         return out; }, py::arg("queue"), py::arg("query_graphs"), py::arg("data_graphs"), py::arg("signatures"), py::arg("candidates"), py::keep_alive<4, 1>(), py::keep_alive<5, 1>());
+
+    m.def("refine_candidates", [](sycl::queue &q, const py::list &query_graph_py, const py::list &data_graph_py, sigmo::signature::Signature<> &sig, sigmo::candidates::Candidates &cand)
+    {
+        auto query_batch = parse_graph_batch(query_graph_py);
+        auto data_batch = parse_graph_batch(data_graph_py);
+        auto stats = sigmo_python::refine_candidates(q, query_batch, data_batch, sig, cand);
+
+        py::dict out;
+        out["num_query_graphs"] = stats.num_query_graphs;
+        out["num_data_graphs"] = stats.num_data_graphs;
+        out["total_query_nodes"] = stats.total_query_nodes;
+        out["total_data_nodes"] = stats.total_data_nodes;
+        out["candidates_count"] = stats.total_candidates;
+        out["allocated_bytes"] = stats.allocated_bytes;
+        
+        return out;
+    }, 
+    py::arg("queue"), py::arg("query_graphs"), py::arg("data_graphs"), py::arg("signatures"), py::arg("candidates"), py::keep_alive<4, 1>(), py::keep_alive<5, 1>());
 }
