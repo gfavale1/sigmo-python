@@ -31,16 +31,16 @@ namespace sigmo_python
     struct HostCSRGraphInput
     {
         /// Offset CSR che delimitano l'inizio e la fine dei vicini di ciascun nodo.
-        std::vector<std::uint32_t> row_offsets;
+        std::vector<uint32_t> row_offsets;
 
         /// Lista concatenata degli indici dei nodi adiacenti.
-        std::vector<std::uint32_t> column_indices;
+        std::vector<uint32_t> column_indices;
 
         /// Etichette associate ai nodi del grafo.
-        std::vector<std::uint32_t> node_labels;
+        std::vector<uint8_t> node_labels;
 
         /// Etichette associate agli archi del grafo.
-        std::vector<std::uint32_t> edge_labels;
+        std::vector<uint8_t> edge_labels;
 
         /// Numero totale di nodi del grafo.
         std::size_t num_nodes;
@@ -117,5 +117,16 @@ namespace sigmo_python
         std::size_t total_candidates;
 
         std::size_t allocated_bytes;
+    };
+
+    struct JoinCandidatesStats
+    {
+        std::size_t num_matches;
+
+        double execution_time;
+
+        std::uint32_t total_query_graph;
+
+        std::uint32_t total_data_graph;
     };
 } // namespace sigmo_python

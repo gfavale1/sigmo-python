@@ -12,6 +12,7 @@
 #include "graph.hpp"
 #include "signature.hpp"
 #include "candidates.hpp"
+#include "gmcr.hpp"
 /**
  * @namespace sigmo_python
  * @brief Namespace che raccoglie l'interfaccia pubblica del binding Python per SIGMo.
@@ -44,8 +45,9 @@ namespace sigmo_python
      *         se lo scope passato non è supportato.
      */
     GraphBatchStats generate_csr_signatures(
-        const sycl::device &dev,
+        sycl::queue &queue,
         const std::vector<HostCSRGraphInput> &graphs,
+        sigmo::signature::Signature<> &signatures,
         const std::string &scope);
 
     /**
@@ -71,8 +73,9 @@ namespace sigmo_python
      *         se lo scope passato non è supportato.
      */
     GraphBatchStats refine_csr_signatures(
-        const sycl::device &dev,
+        sycl::queue &queue,
         const std::vector<HostCSRGraphInput> &graphs,
+        sigmo::signature::Signature<> &signatures,
         const std::string &scope,
         std::size_t view_size);
 
@@ -126,4 +129,33 @@ namespace sigmo_python
         const std::vector<HostCSRGraphInput> &data_graph,
         sigmo::signature::Signature<> &signatures,
         sigmo::candidates::Candidates &candidates);
+
+    /**
+     * @brief Esegue la fase di join per identificare gli isomorfismi reali tra i grafi.
+     *
+     * * Il wrapper gestisce il caricamento temporaneo dei grafi host-side sulla GPU 
+     * (DeviceBatchedCSRGraph) e coordina la generazione della struttura GMCR 
+     * (Global Matching Candidates Record) necessaria per l'esplorazione dello spazio degli stati.
+     * 
+     * @param queue Queue SYCL usata per il caricamento dei dati e l'esecuzione dei kernel.
+     * @param query_graph Batch di grafi query nel formato HostCSRGraphInput provenienti dal binding.
+     * @param data_graph Batch di grafi target (database) nel formato HostCSRGraphInput.
+     * @param candidates Oggetto SIGMo dei candidati, aggiornato dalle fasi precedenti (Filter/Refine).
+     * @param gmcr Oggetto per la gestione del mapping dei candidati, fondamentale per la fase di join.
+     * @param num_matches Riferimento (output) in cui viene memorizzato il numero totale di isomorfismi trovati.
+     * @param find_first Se true, il kernel si interrompe al primo match trovato per ogni coppia (migliora le performance 
+     * se interessa solo la presenza del sottografo e non tutte le occorrenze).
+     * 
+     * * @return Statistiche aggregate sull'esecuzione (tempi di calcolo e conteggio grafi processati).
+     */
+
+    JoinCandidatesStats join_candidates ( 
+        sycl::queue &queue,
+        const std::vector<HostCSRGraphInput> &query_graph,
+        const std::vector<HostCSRGraphInput> &data_graph,
+        sigmo::candidates::Candidates &candidates,
+        sigmo::isomorphism::mapping::GMCR &gmcr,
+        std::size_t &num_matches,
+        bool find_first = true
+    );
 } // namespace sigmo_python

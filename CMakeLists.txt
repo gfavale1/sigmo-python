@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Target SYCL per GPU NVIDIA
 set(SYCL_TARGETS "nvptx64-nvidia-cuda")
 set(CUDA_PATH "/usr/local/cuda")
 
@@ -27,17 +26,15 @@ endif()
 
 pybind11_add_module(_core
     cpp/src/module.cpp
-    cpp/src/api.cpp
+    # cpp/src/api.cpp
 )
 
 target_include_directories(_core
     PRIVATE
-        cpp/include
         ${DPCTL_PYBIND11_INCLUDE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/sigmo/library/include
+        cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/sigmo/library/include  
 )
-
-target_compile_features(_core PRIVATE cxx_std_17)
 
 target_compile_options(_core PRIVATE
     -fsycl
@@ -49,6 +46,7 @@ target_link_options(_core PRIVATE
     -fsycl
     -fsycl-targets=${SYCL_TARGETS}
     --cuda-path=${CUDA_PATH}
+    -Wl,--allow-multiple-definition  
 )
 
 set_target_properties(_core PROPERTIES

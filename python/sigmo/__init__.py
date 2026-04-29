@@ -10,6 +10,8 @@ from ._core import (
     Signature,
     Candidates,
     refine_candidates,
+    join_candidates,
+    GMCR,
 )
 
 # __all__ definisce l'interfaccia pubblica del package.
@@ -24,4 +26,6 @@ __all__ = [
     "Signature",
     "Candidates",
     "refine_candidates",
+    "join_candidates",
+    "GMCR",
 ]
