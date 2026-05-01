@@ -2,6 +2,7 @@ import os
 import time
 import dpctl
 import sigmo
+import warnings
 from rdkit import Chem
 
 from sigmo import (
@@ -15,6 +16,9 @@ from sigmo import (
     join_candidates,
 )
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*dpctl.tensor is deprecated*")
+
 def smarts_to_csr(filepath):
     graphs = []
 
@@ -24,10 +28,21 @@ def smarts_to_csr(filepath):
     with open(filepath, "r") as f:
         lines = f.readlines()
 
-    for line in lines:
-        smarts = line.strip()
-        if not smarts:
+    for i, line in enumerate(lines): # Aggiunto enumerate per avere l'indice
+        parts = line.strip().split()
+        if not parts:
             continue
+
+        smarts = parts[0]
+        
+        # MODIFICATO: Se non c'è un nome, usiamo l'indice + un'anteprima della molecola
+        if len(parts) > 1:
+            mol_name = parts[1]
+        else:
+            # Prende i primi 10 caratteri della stringa chimica per riconoscerla
+            preview = smarts[:10] + "..." if len(smarts) > 10 else smarts
+            # Esempio: "ID:0 (Clc1cc2[nH+...)"
+            mol_name = f"ID:{i} ({preview})"
 
         mol = Chem.MolFromSmarts(smarts)
         if mol is None:
@@ -67,6 +82,7 @@ def smarts_to_csr(filepath):
             "node_labels": node_labels,
             "edge_labels": edge_labels,
             "num_nodes": num_nodes,
+            "name": mol_name, # AGGIUNTO: Ora il nome fa parte del dizionario del grafo
         })
 
     return graphs
@@ -101,12 +117,15 @@ def run_pipeline():
     base_dir = "benchmarks/datasets"
     query_graphs = smarts_to_csr(os.path.join(base_dir, "query.smarts"))
     data_graphs = smarts_to_csr(os.path.join(base_dir, "data.smarts"))
+    query_names = [g["name"] for g in query_graphs]
+    data_names = [g["name"] for g in data_graphs]
 
     limit = 10000 
-    data_graphs = data_graphs[:limit]
+    data_graphs = data_graphs[:500]
+    query_graphs = query_graphs[:100]
 
     # Opzionale: limita anche le query se sono tante
-    query_graphs = query_graphs[:100]
+    # query_graphs = query_graphs[:limit]
 
     total_q_nodes = sum(g["num_nodes"] for g in query_graphs)
     total_d_nodes = sum(g["num_nodes"] for g in data_graphs)
@@ -159,7 +178,7 @@ def run_pipeline():
         return
 
     print("\n[*] 3/4 - Ciclo di Raffinamento Iterativo")
-    NUM_ITERATIONS = 5
+    NUM_ITERATIONS = 6
     VIEW_SIZE = 1 # Raggio dell'intorno per le firme
     current_count = initial_count
 
@@ -200,17 +219,35 @@ def run_pipeline():
             break
 
     gmcr = GMCR(q)
+    
     print("\n[*] 4/4 - Fase di Join (Isomorfismo)")
     
     try:        
-        test_queries = query_graphs[:10]
-        test_data = data_graphs[:10]
-
-        j_stats = join_candidates(q, test_queries, test_data, cand, gmcr, True)
+        j_stats = join_candidates(q, query_graphs, data_graphs, cand, gmcr, True)
         
-        print(f"  - Match trovati: {j_stats['num_matches']:,}")
-        print(f"  - Tempo Kernel:  {j_stats['execution_time']:.2f} ms")
+        print(f"  - Match totali trovati: {j_stats['num_matches']:,}")
+        print(f"  - Tempo Kernel:         {j_stats['execution_time']:.2f} ms")
+        print(f"  - Grafi Query processati: {j_stats['num_query_graph']}")
+        print(f"  - Grafi Data processati:  {j_stats['num_data_graph']}")
+
+        matches = j_stats.get('matches_dict', {})
+
+        print("\n[DETTAGLIO MATCH FOUND]:")
+
+        # Iteriamo sugli items del dizionario: q_idx è la chiave, d_indices è la lista
+        for q_idx, d_indices in matches.items():
+            # Per ogni query, iteriamo su tutti i grafi data che hanno matchato
+            for d_idx in d_indices:
                 
+                # Recupera i nomi usando gli indici (che ora sono semplici interi)
+                q_name = query_names[q_idx] if q_idx < len(query_names) else f"Q-{q_idx}"
+                d_name = data_names[d_idx] if d_idx < len(data_names) else f"D-{d_idx}"
+                
+                print(f"  - {q_name} MATCH con {d_name}")
+                        
+    except Exception as e:
+        print(f"!!! ERRORE nella fase di Join: {e}")
+        
     finally:
         print("\n[*] Pipeline terminata.")
 
