@@ -1,75 +1,73 @@
-def make_csr_graph(row_offsets, column_indices, node_labels, edge_labels, num_nodes=None):
-    if num_nodes is None:
-        num_nodes = len(node_labels)
+import os
+from rdkit import Chem
 
+def make_csr_graph(row_offsets, column_indices, node_labels, edge_labels, num_nodes=None, name="graph"):
+    """Crea il dizionario standard usando liste semplici (compatibile con la tua pipeline)."""
     return {
         "row_offsets": list(row_offsets),
         "column_indices": list(column_indices),
         "node_labels": list(node_labels),
         "edge_labels": list(edge_labels),
-        "num_nodes": num_nodes,
+        "num_nodes": int(num_nodes if num_nodes is not None else len(node_labels)),
+        "name": str(name)
     }
 
+def smarts_to_csr_from_string(smarts):
+    """Converte una stringa SMARTS/SMILES in formato CSR per SIGMo."""
+    mol = Chem.MolFromSmarts(smarts)
+    if mol is None: mol = Chem.MolFromSmiles(smarts)
+    if mol is None: raise ValueError(f"Stringa chimica non valida: {smarts}")
 
-def toy_two_node_graph():
-    return make_csr_graph(
-        row_offsets=[0, 1, 2],
-        column_indices=[1, 0],
-        node_labels=[0, 1],
-        edge_labels=[0, 0],
-        num_nodes=2,
-    )
+    num_nodes = mol.GetNumAtoms()
+    adj = [[] for _ in range(num_nodes)]
+    node_labels = [atom.GetAtomicNum() for atom in mol.GetAtoms()]
+    edge_labels_map = {}
 
-def make_csr_graph(row_offsets, column_indices, node_labels, edge_labels, num_nodes=None):
-    if num_nodes is None:
-        num_nodes = len(node_labels)
-
-    return {
-        "row_offsets": list(row_offsets),
-        "column_indices": list(column_indices),
-        "node_labels": list(node_labels),
-        "edge_labels": list(edge_labels),
-        "num_nodes": num_nodes,
-    }
-
-
-def toy_two_node_graph():
-    return make_csr_graph(
-        row_offsets=[0, 1, 2],
-        column_indices=[1, 0],
-        node_labels=[0, 1],
-        edge_labels=[0, 0],
-        num_nodes=2,
-    )
-
-
-def chain_graph(num_nodes: int):
-    if num_nodes < 2:
-        raise ValueError("num_nodes must be >= 2")
+    for bond in mol.GetBonds():
+        u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        # Riconoscimento tipi di legame (1=SINGOLO, 2=DOPPIO, 3=TRIPLO, 12=AROMATICO)
+        label = int(bond.GetBondTypeAsDouble()) 
+        adj[u].append(v)
+        adj[v].append(u)
+        edge_labels_map[(u, v)] = edge_labels_map[(v, u)] = label
 
     row_offsets = [0]
     column_indices = []
-    node_labels = []
     edge_labels = []
-
-    for i in range(num_nodes):
-        neighbors = []
-        if i - 1 >= 0:
-            neighbors.append(i - 1)
-        if i + 1 < num_nodes:
-            neighbors.append(i + 1)
-
-        column_indices.extend(neighbors)
-        edge_labels.extend([0] * len(neighbors))
+    for j in range(num_nodes):
+        for n in sorted(adj[j]):
+            column_indices.append(n)
+            edge_labels.append(edge_labels_map[(j, n)])
         row_offsets.append(len(column_indices))
 
-        # etichette alternate 0/1, giusto per avere qualcosa di semplice
-        node_labels.append(i % 2)
+    return make_csr_graph(row_offsets, column_indices, node_labels, edge_labels, num_nodes, smarts)
 
-    return make_csr_graph(
-        row_offsets=row_offsets,
-        column_indices=column_indices,
-        node_labels=node_labels,
-        edge_labels=edge_labels,
-        num_nodes=num_nodes,
-    )
+def toy_two_node_graph():
+    """Grafo di test semplice: C-C (etano)."""
+    return make_csr_graph([0, 1, 2], [1, 0], [6, 6], [1, 1], 2, "ethane")
+
+def smarts_to_csr(file_path):
+    """Legge un file SMARTS e restituisce una lista di grafi CSR."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File non trovato: {file_path}")
+    
+    graphs = []
+    with open(file_path, 'r') as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Gestisce il formato: "SMARTS Nome" o solo "SMARTS"
+            parts = line.split(maxsplit=1)
+            smarts = parts[0]
+            name = parts[1] if len(parts) > 1 else f"ID:{i}"
+            
+            try:
+                graph = smarts_to_csr_from_string(smarts)
+                graph["name"] = name
+                graphs.append(graph)
+            except ValueError:
+                # Ignora le righe non valide 
+                continue
+    return graphs

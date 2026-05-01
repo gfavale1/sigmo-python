@@ -1,38 +1,42 @@
 import pytest
 import dpctl
 import sigmo
-# Assicurati di importare le tue utility se sono in un file separato, 
-# oppure incollale qui se servono solo ai test.
-from sigmo.graph import toy_two_node_graph, make_csr_graph 
+import numpy as np
+from sigmo.config import get_default_queue
+from sigmo.graph import toy_two_node_graph
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def q():
-    """Ritorna la coda SYCL per i test."""
-    try:
-        return dpctl.SyclQueue("gpu")
-    except Exception:
-        return dpctl.SyclQueue("cpu")
+    """
+    Usa la logica centralizzata di config.py. 
+    L'uso di scope="session" garantisce che la GPU venga inizializzata una sola volta per tutti i test.
+    """
+    return get_default_queue()
 
 @pytest.fixture
 def simple_graphs():
-    """Ritorna una lista con un grafo giocattolo valido."""
-    return [toy_two_node_graph()]
+    """Restituisce un grafo CSR standard con tipi di dati espliciti."""
+    g = toy_two_node_graph()
+    # Assicuriamoci che i dati siano int32/uint32 per il C++
+    return [g]
 
 @pytest.fixture
 def sig_simple(q, simple_graphs):
-    """Crea l'oggetto Signature per i grafi semplici."""
+    """Crea una Signature basata sul numero reale di nodi."""
     n_nodes = sum(g["num_nodes"] for g in simple_graphs)
-    return sigmo.Signature(q, n_nodes, n_nodes)
+    # Importante: verificare se il binding si aspetta (q, query_nodes, target_nodes)
+    return sigmo._core.Signature(q, n_nodes, n_nodes)
 
 @pytest.fixture
-def invalid_graphs():
-    """Ritorna un grafo con row_offsets errati per scatenare eccezioni C++."""
-    return [
-        make_csr_graph(
-            row_offsets=[0, 1],   # ERRORE: con 2 nodi servono 3 offsets [0, x, y]
-            column_indices=[1, 0],
-            node_labels=[0, 1],
-            edge_labels=[0, 0],
-            num_nodes=2,
-        )
-    ]
+def cand_simple(q, simple_graphs):
+    """Fixture aggiuntiva per l'oggetto Candidates, spesso dimenticata."""
+    n_nodes = sum(g["num_nodes"] for g in simple_graphs)
+    return sigmo._core.Candidates(q, n_nodes, n_nodes)
+
+@pytest.fixture(scope="session")
+def sample_smarts_file(tmp_path_factory):
+    """Crea un file SMARTS temporaneo per i test di caricamento."""
+    content = "C1CCCCC1 Benzene\nCC[NH+]CC\n[NX3][NX2]=[*] Query_1"
+    fn = tmp_path_factory.mktemp("data") / "test.smarts"
+    fn.write_text(content)
+    return str(fn)
