@@ -166,5 +166,6 @@ PYBIND11_MODULE(_core, m)
         out["execution_time"] = stats.execution_time;
         out["num_query_graph"] = stats.total_query_graph;
         out["num_data_graph"] = stats.total_data_graph;
+        out["matches_dict"] = stats.matches_dict;
         return out; });
 }

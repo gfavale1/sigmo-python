@@ -128,5 +128,8 @@ namespace sigmo_python
         std::uint32_t total_query_graph;
 
         std::uint32_t total_data_graph;
+
+        std::unordered_map<uint32_t, std::vector<uint32_t>> matches_dict;
     };
+
 } // namespace sigmo_python

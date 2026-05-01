@@ -434,8 +434,16 @@ namespace sigmo_python
 
         sigmo::DeviceBatchedCSRGraph dev_q = {};
         sigmo::DeviceBatchedCSRGraph dev_d = {};
-        size_t *d_num_matches = nullptr;
         double elapsed_ms = 0.0;
+
+        size_t max_capacity = 50000000;
+        sigmo::types::MatchPair *d_buffer = sycl::malloc_device<sigmo::types::MatchPair>(max_capacity, q);
+        // d_count deve essere allocato per contare i match scritti
+        size_t *d_count = sycl::malloc_device<size_t>(1, q);
+        q.fill(d_count, size_t(0), 1).wait();
+
+        sigmo::types::MatchResultsDevice out_results{d_buffer, d_count, max_capacity};
+        size_t *d_num_matches = nullptr;
 
         try
         {
@@ -443,8 +451,6 @@ namespace sigmo_python
             dev_d = sigmo::createDeviceCSRGraph(q, csr_d);
             d_num_matches = sycl::malloc_shared<size_t>(1, q);
             d_num_matches[0] = 0;
-
-            q.wait_and_throw();
 
             gmcr.generateGMCR(dev_q, dev_d, candidates);
             q.wait_and_throw();
@@ -455,11 +461,10 @@ namespace sigmo_python
             {
                 auto start = std::chrono::high_resolution_clock::now();
 
-                auto event = sigmo::isomorphism::join::joinCandidates(
-                    q, dev_q, dev_d, candidates, gmcr, d_num_matches, find_first);
+                sigmo::isomorphism::join::joinCandidates(
+                    q, dev_q, dev_d, candidates, gmcr, out_results, d_num_matches, find_first);
 
-                event.wait();
-
+                q.wait_and_throw();
                 auto end = std::chrono::high_resolution_clock::now();
                 elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
             }
@@ -469,25 +474,47 @@ namespace sigmo_python
         {
             if (d_num_matches)
                 sycl::free(d_num_matches, q);
+
             if (dev_q.graph_offsets)
                 sigmo::destroyDeviceCSRGraph(dev_q, q);
+
             if (dev_d.graph_offsets)
                 sigmo::destroyDeviceCSRGraph(dev_d, q);
-
-            throw std::runtime_error(std::string("Join process failed: ") + e.what());
+            
+            if(d_buffer)
+                sycl::free(d_buffer, q);
+            
+            if(d_count)
+                sycl::free(d_count, q);
+            throw;
         }
 
-        JoinCandidatesStats stats{
-            static_cast<uint32_t>(num_matches),
-            elapsed_ms,
-            static_cast<uint32_t>(dev_q.num_graphs),
-            static_cast<uint32_t>(dev_d.num_graphs)};
+        JoinCandidatesStats stats;
+        stats.num_matches = num_matches;
+        stats.execution_time = elapsed_ms;
+        stats.total_query_graph = dev_q.num_graphs;
+        stats.total_data_graph = dev_d.num_graphs;
+
+        // Leggiamo quanti match effettivi sono nel buffer (dal contatore atomico d_count)
+        size_t actual_match_count = 0;
+        q.memcpy(&actual_match_count, d_count, sizeof(size_t)).wait();
+
+        if (actual_match_count > 0)
+        {
+            std::vector<sigmo::types::MatchPair> h_matches(actual_match_count);
+            q.memcpy(h_matches.data(), d_buffer, actual_match_count * sizeof(sigmo::types::MatchPair)).wait();
+
+            for (const auto &match : h_matches)
+            {
+                stats.matches_dict[match.query_id].push_back(match.data_id);
+            }
+        }
 
         sycl::free(d_num_matches, q);
+        sycl::free(d_buffer, q);
+        sycl::free(d_count, q);
         sigmo::destroyDeviceCSRGraph(dev_q, q);
         sigmo::destroyDeviceCSRGraph(dev_d, q);
-
-        q.wait_and_throw();
 
         return stats;
     }
