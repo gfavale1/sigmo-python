@@ -828,3 +828,12 @@ JSON summary export: OK
 ```
 
 This version should be considered a stable research-oriented Python interface over the SIGMo backend.
+
+## Additional Documentation
+
+More detailed documentation is available in the `docs/` folder:
+
+- [`docs/api.md`](docs/api.md): Python API reference.
+- [`docs/architecture.md`](docs/architecture.md): internal architecture and pipeline flow.
+- [`docs/build.md`](docs/build.md): build and environment setup.
+- [`docs/benchmarks.md`](docs/benchmarks.md): benchmark commands and experimental results.
