@@ -1,24 +1,60 @@
+"""
+Advanced SIGMo pipeline example.
+
+This example shows how to use PipelineContext directly, executing
+the main SIGMo kernels step by step.
+
+Run from the repository root:
+
+    PYTHONPATH=python python examples/advanced_pipeline.py
+"""
+
 import sigmo
+from sigmo.result import build_match_result
 
-query_graphs = sigmo.load_molecules("benchmarks/datasets/query.smarts")
-data_graphs = sigmo.load_molecules("benchmarks/datasets/data.smarts")
 
-ctx = sigmo.PipelineContext(query_graphs, data_graphs, device="gpu")
-ctx.allocate()
-ctx.generate_signatures()
-ctx.filter_candidates()
-ctx.refine(max_iterations=3)
-ctx.join(find_first=True)
+def main():
+    query_graphs = sigmo.load_molecules("benchmarks/datasets/query.smarts")
+    data_graphs = sigmo.load_molecules("benchmarks/datasets/data.smarts")
 
-result = sigmo.result.build_match_result(  # oppure usa direttamente ctx.run() se non ti serve step-by-step
-    ctx.raw_join_result,
-    query_graphs,
-    data_graphs,
-    steps=ctx.steps,
-    warnings=ctx.warnings,
-    errors=ctx.errors,
-    device=ctx.device_name,
-    requested_iterations=3,
-    executed_iterations=ctx.executed_iterations,
-)
-print(result.summary())
+    # Optional: keep the example lightweight.
+    query_graphs = query_graphs[:5]
+    data_graphs = data_graphs[:20]
+
+    ctx = sigmo.PipelineContext(
+        query_graphs=query_graphs,
+        data_graphs=data_graphs,
+        device="gpu",
+    )
+
+    ctx.allocate()
+    ctx.generate_signatures()
+    ctx.filter_candidates()
+
+    ctx.refine(
+        3,
+        start_view_size=1,
+        stop_on_fixed_point=True,
+    )
+
+    ctx.join(find_first=True)
+
+    result = build_match_result(
+        ctx.raw_join_result,
+        query_graphs,
+        data_graphs,
+        steps=ctx.steps,
+        warnings=ctx.warnings,
+        errors=ctx.errors,
+        device=ctx.device_name,
+        requested_iterations=3,
+        executed_iterations=ctx.executed_iterations,
+    )
+
+    print(result.summary())
+    print()
+    print(result.explain())
+
+
+if __name__ == "__main__":
+    main()

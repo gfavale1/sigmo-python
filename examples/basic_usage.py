@@ -1,6 +1,5 @@
 import sigmo
 
-
 def main():
     result = sigmo.match(
         query="CC",
