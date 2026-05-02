@@ -104,6 +104,7 @@ sigmo-python/
 ├── examples/
 │   ├── basic_usage.py
 │   ├── validation_usage.py
+|   ├── advanced_pipeline.py
 │   ├── run_pipeline.py
 │   └── outputs/
 │       └── .gitkeep
