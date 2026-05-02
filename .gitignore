@@ -22,9 +22,6 @@ egg-info/
 *.swp
 *.user
 
-*.log
-benchmarks/datasets/*.smarts
-benchmarks/README.md
-benchmarks/ZINC_URLS
+examples/outputs/*
+!examples/outputs/.gitkeep
 
-.gitignore

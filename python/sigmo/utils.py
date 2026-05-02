@@ -1,14 +1,14 @@
-def format_matches(raw_results, q_graphs, d_graphs):
-    """
-    Trasforma i risultati grezzi del C++ in un formato Pythonico.
-    Esempio: associa gli indici dei match ai nomi delle molecole.
-    """
-    # Se il matcher ha restituito un errore o 0 match
-    if raw_results.get("num_matches", 0) == 0:
-        return {"total_matches": 0, "details": []}
+from __future__ import annotations
 
-    formatted = {
-        "total_matches": raw_results["num_matches"],
-        "results": raw_results.get("matches", [])
-    }
-    return formatted
+from typing import Any, Dict, List
+
+from .result import build_match_result
+
+
+def format_matches(raw_results: Dict[str, Any], q_graphs: List[Dict[str, Any]], d_graphs: List[Dict[str, Any]]):
+    """
+    Utility retrocompatibile: trasforma il risultato grezzo in MatchResult.
+
+    Preferisci pero' usare direttamente sigmo.match(), sigmo.search() o SIGMoMatcher.
+    """
+    return build_match_result(raw_results, q_graphs, d_graphs)

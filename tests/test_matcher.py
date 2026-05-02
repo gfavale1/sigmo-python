@@ -1,19 +1,103 @@
-import pytest
 import sigmo
-from sigmo import matcher
+from conftest import assert_match_result
 
-def test_simple_match(q):
-    """Test di base: Etano (C-C) contro se stesso."""
-    graph = {
-        "row_offsets": [0, 1, 2],
-        "column_indices": [1, 0],
-        "node_labels": [6, 6], 
-        "edge_labels": [1, 1],
-        "num_nodes": 2,
-        "name": "ethane"
-    }
-    
-    results = matcher.run_isomorphism([graph], [graph], queue=q, iterations=0)
-    
-    print(f"\nDEBUG - Match trovati: {results.get('num_matches')}")
-    assert results['num_matches'] >= 1
+
+def test_match_high_level_positive():
+    result = sigmo.match(
+        query="CC",
+        target="CCC",
+        input_format="smiles",
+        iterations=0,
+        find_first=True,
+        device="auto",
+    )
+
+    assert_match_result(result)
+    assert result.total_matches >= 1
+    assert result.query_count == 1
+    assert result.data_count == 1
+    assert "Matches found" in result.summary()
+
+
+def test_match_high_level_negative():
+    result = sigmo.match(
+        query="CO",
+        target="CCC",
+        input_format="smiles",
+        iterations=0,
+        find_first=True,
+        device="auto",
+    )
+
+    assert_match_result(result)
+    assert result.total_matches == 0
+
+
+def test_run_isomorphism_returns_match_result(q, ethane_graph):
+    result = sigmo.run_isomorphism(
+        [ethane_graph],
+        [ethane_graph],
+        queue=q,
+        iterations=0,
+        find_first=True,
+    )
+
+    assert_match_result(result)
+    assert result.total_matches >= 1
+
+
+def test_search_batch_api():
+    result = sigmo.search(
+        queries=["CC", "CO"],
+        database=["CCC", "CCO"],
+        input_format="smiles",
+        iterations=0,
+        find_first=True,
+        device="auto",
+    )
+
+    assert_match_result(result)
+    assert result.query_count == 2
+    assert result.data_count == 2
+    assert result.total_matches >= 1
+
+
+def test_sigmo_matcher_object_api():
+    matcher = sigmo.SIGMoMatcher(
+        device="auto",
+        iterations=0,
+        find_first=True,
+        input_format="smiles",
+    )
+
+    result = matcher.run(
+        queries=["CC"],
+        database=["CCC"],
+    )
+
+    assert_match_result(result)
+    assert result.total_matches >= 1
+    assert matcher.last_result is result
+    assert matcher.last_context is not None
+
+
+def test_result_export_methods(tmp_path):
+    result = sigmo.match(
+        query="CC",
+        target="CCC",
+        input_format="smiles",
+        iterations=0,
+        find_first=True,
+        device="auto",
+    )
+
+    csv_path = tmp_path / "matches.csv"
+    json_path = tmp_path / "matches.json"
+
+    result.to_csv(csv_path)
+    result.to_json(json_path)
+
+    assert csv_path.exists()
+    assert json_path.exists()
+    assert csv_path.read_text().strip() != ""
+    assert json_path.read_text().strip() != ""
