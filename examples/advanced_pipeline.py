@@ -1,14 +1,3 @@
-"""
-Advanced SIGMo pipeline example.
-
-This example shows how to use PipelineContext directly, executing
-the main SIGMo kernels step by step.
-
-Run from the repository root:
-
-    PYTHONPATH=python python examples/advanced_pipeline.py
-"""
-
 import sigmo
 from sigmo.result import build_match_result
 

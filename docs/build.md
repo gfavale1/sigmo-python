@@ -645,4 +645,3 @@ CSV streaming export: OK
 JSON summary export: OK
 ```
 
-This build and setup workflow should be considered the reference development setup for the current state of the repository.

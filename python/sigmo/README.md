@@ -879,4 +879,3 @@ Visualization API: placeholder only
 Tests: 31/31 passing
 ```
 
-The package is currently suitable as a stable research-oriented Python interface over the SIGMo backend.

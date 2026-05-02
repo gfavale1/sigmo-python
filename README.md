@@ -827,8 +827,6 @@ Streaming CSV export: OK
 JSON summary export: OK
 ```
 
-This version should be considered a stable research-oriented Python interface over the SIGMo backend.
-
 ## Additional Documentation
 
 More detailed documentation is available in the `docs/` folder:

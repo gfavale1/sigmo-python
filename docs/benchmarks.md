@@ -635,5 +635,3 @@ JSON summary export: completed
 Large-result mode: working
 Full refinement on RTX 3060 Laptop GPU: completed
 ```
-
-The current results show that the Python interface can execute the complete SIGMo pipeline on a large molecular dataset while safely handling millions of matches.
