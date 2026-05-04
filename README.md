@@ -10,7 +10,7 @@ The interface is designed around three usage levels:
 2. **Batch/search API** for query datasets against large data datasets.
 3. **Kernel-level API** for advanced users who want to execute and inspect each SIGMo kernel step-by-step.
 
-The current implementation supports molecule loading from SMARTS/SMILES, conversion to SIGMo-compatible CSR graphs, execution of the full matching pipeline, optional RDKit validation, explainable results, test coverage and streaming output for very large result sets.
+The current implementation supports molecule loading from SMARTS/SMILES, conversion to SIGMo-compatible CSR graphs, execution of the full matching pipeline, explainable results, test coverage, visualization utilities and streaming output for very large result sets.
 
 ---
 
@@ -31,7 +31,7 @@ The current implementation supports molecule loading from SMARTS/SMILES, convers
 - [Bond Label Policy](#bond-label-policy)
 - [Output Format](#output-format)
 - [Large Result Handling](#large-result-handling)
-- [RDKit Validation](#rdkit-validation)
+- [Visualization Utilities](#visualization-utilities)
 - [Testing](#testing)
 - [Experimental Results](#experimental-results)
 - [Known Limitations](#known-limitations)
@@ -51,7 +51,7 @@ The main goals are:
 - hide low-level SYCL details from non-HPC users;
 - preserve access to individual kernels for advanced users;
 - provide explainable outputs through summaries and execution traces;
-- validate results against RDKit when needed;
+- support molecule, CSR graph and match-pair visualization;
 - handle very large outputs without exhausting memory;
 - provide examples and tests for reproducible usage.
 
@@ -75,8 +75,12 @@ Current features include:
   - `explain()`;
   - `to_csv()`;
   - `to_json()`;
-  - validation metadata;
-- optional validation against RDKit `HasSubstructMatch`;
+- optional DataFrame conversion through pandas;
+- visualization utilities for:
+  - individual molecules;
+  - query-target pairs;
+  - internal SIGMo CSR graphs;
+  - real match pairs from benchmark datasets;
 - large-result mode for millions of matches;
 - CSV streaming export;
 - lightweight JSON summary export;
@@ -99,38 +103,47 @@ sigmo-python/
 │       ├── pipeline.py
 │       ├── result.py
 │       ├── utils.py
-│       └── validation.py
+│       └── visualize.py
 │
 ├── examples/
 │   ├── basic_usage.py
-│   ├── validation_usage.py
-|   ├── advanced_pipeline.py
+│   ├── advanced_pipeline.py
 │   ├── run_pipeline.py
+│   ├── visualization_usage.py
 │   └── outputs/
 │       └── .gitkeep
 │
 ├── tests/
 │   ├── conftest.py
+│   ├── helpers.py
 │   ├── test_graph.py
 │   ├── test_low_level_kernels.py
 │   ├── test_matcher.py
 │   ├── test_pipeline.py
-│   ├── test_validation.py
-│   └── test_validation_against_rdkit.py
+│   └── test_visualize.py
 │
 ├── benchmarks/
 │   └── datasets/
 │       ├── query.smarts
 │       └── data.smarts
 │
+├── external/
+│   └── sigmo/
+│
+├── scripts/
+│   ├── build.sh
+│   └── dev_env.sh
+│
+├── docs/
 ├── pyproject.toml
+├── setup.py
 ├── .gitignore
 └── README.md
 ```
 
 The `benchmarks/datasets/*.smarts` files may be ignored by Git if they are large or externally distributed.
 
-The `examples/outputs/` directory is intended for generated CSV and JSON outputs. Its contents should normally be ignored by Git, except for `.gitkeep`.
+The `examples/outputs/` directory is intended for generated PNG, CSV and JSON outputs. Its contents should normally be ignored by Git, except for `.gitkeep`.
 
 ---
 
@@ -183,9 +196,8 @@ MatchResult
  |  explain()
  |  to_csv()
  |  to_json()
- |  validation
  v
-User-readable result / CSV / JSON / validation report
+User-readable result / CSV / JSON
 ```
 
 The native C++/SYCL binding remains thin. The Python layer is responsible for:
@@ -194,26 +206,53 @@ The native C++/SYCL binding remains thin. The Python layer is responsible for:
 - graph conversion;
 - pipeline orchestration;
 - output formatting;
-- validation;
 - large-result management;
+- visualization helpers;
 - user-facing API design.
+
+RDKit is used for molecule parsing and visualization support. It is not used as a public validation or benchmarking layer in the current interface.
 
 ---
 
 ## Installation and Environment
 
-The project expects an environment where the native SIGMo extension and its dependencies are already built and importable.
+The project expects an environment where oneAPI/SYCL, `dpctl`, RDKit and the native SIGMo dependencies are available.
 
-Typical development usage from the repository root:
+A typical development setup is:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
+conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
 ```
 
-For tests:
+Build the native extension from the repository root:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+./scripts/build.sh
+```
+
+Then install the Python package in editable mode:
+
+```bash
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
+After this step, the package can be imported without setting `PYTHONPATH` manually.
+
+Verify the import:
+
+```bash
+python - <<'PY'
+import sigmo
+print(sigmo.__file__)
+print("SIGMo import OK")
+PY
+```
+
+Run tests:
+
+```bash
+pytest tests -vv
 ```
 
 Main runtime dependencies include:
@@ -227,7 +266,7 @@ Main runtime dependencies include:
 Optional dependencies may include:
 
 - pandas, if using DataFrame-based workflows;
-- additional visualization libraries, if molecule visualization is added later.
+- networkx and matplotlib, if using CSR graph visualization.
 
 ---
 
@@ -267,6 +306,12 @@ Kernel steps:
   - generate_data_signatures
   - filter_candidates
   - join_candidates
+```
+
+The corresponding example script is:
+
+```bash
+python examples/basic_usage.py
 ```
 
 ---
@@ -325,6 +370,7 @@ The `queries` and `database` arguments may be:
 
 - file paths;
 - lists of SMILES/SMARTS strings;
+- RDKit `Mol` objects;
 - already constructed CSR graph dictionaries.
 
 ---
@@ -341,7 +387,6 @@ matcher = sigmo.SIGMoMatcher(
     iterations=6,
     find_first=True,
     input_format="auto",
-    validate_with_rdkit=False,
 )
 
 result = matcher.run(
@@ -406,6 +451,12 @@ join candidates
 
 It is useful for debugging, benchmarking and research experiments.
 
+The corresponding example script is:
+
+```bash
+python examples/advanced_pipeline.py
+```
+
 ---
 
 ## Command-Line Kernel Pipeline Example
@@ -413,13 +464,13 @@ It is useful for debugging, benchmarking and research experiments.
 The main advanced example is:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py
+python examples/run_pipeline.py
 ```
 
 Example with full dataset, 6 refinement iterations and streaming output:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -451,11 +502,13 @@ Main options:
     Export matches to CSV.
 
 --json PATH
-    Export a JSON summary.
+    Export a JSON result or lightweight summary.
 
---device auto|gpu|cpu
+--device auto|gpu|cpu|cuda|cuda:gpu
     Select the SYCL device.
 ```
+
+By default, the command-line example uses conservative settings suitable for small test runs.
 
 ---
 
@@ -513,6 +566,8 @@ This policy follows the original prototype behavior and avoids passing unsupport
 
 An earlier explicit aromatic label such as `12` caused native crashes in some cases, so the current version prioritizes backend compatibility and stability.
 
+This makes the CSR representation less chemically expressive than RDKit's full SMARTS semantics, but keeps the SIGMo backend stable.
+
 Future versions may add a configurable aromatic policy once backend support is validated.
 
 ---
@@ -531,8 +586,7 @@ A `MatchResult` contains:
 - kernel steps;
 - warnings;
 - errors;
-- raw result metadata;
-- optional validation metadata.
+- raw result metadata.
 
 Example:
 
@@ -551,13 +605,17 @@ result.to_csv("matches.csv")
 result.to_json("matches.json")
 ```
 
+For optional pandas workflows:
+
+```python
+df = result.to_dataframe()
+```
+
 ---
 
 ## Large Result Handling
 
 Very large molecular searches may produce millions of matches.
-
-For example, a full dataset run produced more than 15 million matches.
 
 Materializing every match as a Python object or exporting a complete JSON list can exhaust memory. To avoid this, `examples/run_pipeline.py` supports a large-result mode.
 
@@ -571,7 +629,7 @@ In large-result mode:
 Recommended command:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -592,45 +650,55 @@ The JSON summary contains metadata, warnings and kernel timings, but not all mat
 
 ---
 
-## RDKit Validation
+## Visualization Utilities
 
-The interface supports optional validation against RDKit.
+The package includes optional visualization helpers in `sigmo.visualize`.
+
+They support:
+
+- drawing a single molecule;
+- drawing a query-target pair;
+- highlighting a query inside a target molecule using RDKit;
+- converting a SIGMo CSR graph to NetworkX;
+- drawing an internal CSR graph for debugging;
+- generating real match-pair examples from the benchmark dataset.
 
 Example:
 
 ```python
-import sigmo
+from sigmo.visualize import draw_molecule, draw_match_pair, draw_graph
 
-result = sigmo.match(
-    query="c1ccccc1",
-    target="CCOC(=O)c1ccccc1",
+draw_molecule(
+    "CCO",
     input_format="smiles",
-    iterations=0,
-    validate_with_rdkit=True,
+    output_path="examples/outputs/molecule.png",
 )
 
-print(result.summary())
-print(result.validation)
+draw_match_pair(
+    "CC",
+    "CCC",
+    query_format="smiles",
+    target_format="smiles",
+    output_path="examples/outputs/match_pair.png",
+    highlight=True,
+)
 ```
 
-Validation compares SIGMo results with:
+Run the full visualization example:
 
-```python
-target_mol.HasSubstructMatch(query_mol)
+```bash
+python examples/visualization_usage.py
 ```
 
-The validation output includes:
+This script generates PNG files in:
 
 ```text
-enabled
-method
-checked_pairs
-agreements
-disagreements
-passed
+examples/outputs/
 ```
 
-Validation is intended for small and controlled datasets. For very large outputs, complete pairwise RDKit validation may be too expensive and should be performed on subsets or samples.
+Generated images should not normally be committed.
+
+Important note: match-pair highlighting is RDKit-based and is used only for visualization. Current SIGMo results are pair-level results, meaning that SIGMo reports that query graph `i` matches data graph `j`, but it does not expose an atom-level mapping for drawing.
 
 ---
 
@@ -639,13 +707,7 @@ Validation is intended for small and controlled datasets. For very large outputs
 Run the full test suite:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
-```
-
-Current status:
-
-```text
-31 passed
+pytest tests -vv
 ```
 
 The tests cover:
@@ -659,7 +721,7 @@ The tests cover:
 - object-oriented API;
 - `PipelineContext`;
 - CSV/JSON export;
-- RDKit validation.
+- visualization utilities.
 
 Test files:
 
@@ -668,8 +730,7 @@ tests/test_graph.py
 tests/test_low_level_kernels.py
 tests/test_matcher.py
 tests/test_pipeline.py
-tests/test_validation.py
-tests/test_validation_against_rdkit.py
+tests/test_visualize.py
 ```
 
 ---
@@ -686,7 +747,7 @@ The pipeline has been tested on a full molecular dataset composed of:
 ### Full dataset without refinement
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 0 \
@@ -706,7 +767,7 @@ Join time: approximately 45.8 seconds
 ### Full dataset with 6 refinement iterations
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -741,10 +802,11 @@ The refinement stage reduced the candidate space by approximately 89.2% and sign
 Current limitations:
 
 - aromatic bonds are currently collapsed to bond label `1` for backend compatibility;
-- complete RDKit validation is only practical on small datasets or sampled subsets;
+- the CSR representation is structural and does not preserve the full SMARTS semantics used by RDKit;
 - JSON export for millions of matches is intentionally avoided;
 - large outputs should be exported using CSV streaming;
 - `--force-refine` may execute refinement on small graphs and should be considered an advanced option;
+- visualization highlighting is RDKit-based and does not represent a SIGMo atom-level mapping;
 - the exact behavior depends on the available SYCL backend and device.
 
 ---
@@ -754,25 +816,35 @@ Current limitations:
 Recommended workflow during development:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
+
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
+Run the test suite:
+
+```bash
+pytest tests -vv
 ```
 
 Run a simple example:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
+python examples/basic_usage.py
 ```
 
-Run validation example:
+Run visualization example:
 
 ```bash
-PYTHONPATH=python python examples/validation_usage.py
+python examples/visualization_usage.py
 ```
 
 Run kernel-level pipeline on a small subset:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 100 \
   --data-limit 5000 \
   --iterations 6 \
@@ -783,7 +855,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 Run full dataset pipeline:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -808,6 +880,12 @@ examples/outputs/*
 !examples/outputs/.gitkeep
 ```
 
+Editable install notes:
+
+- if only Python files are modified, reinstalling is not required;
+- if C++/pybind11/CMake files are modified, rerun `./scripts/build.sh`;
+- if a new environment is created, rerun `python -m pip install -e . --no-build-isolation --no-deps`.
+
 ---
 
 ## Current Status
@@ -819,12 +897,13 @@ High-level API: OK
 Batch API: OK
 Object-oriented API: OK
 Kernel-level API: OK
-RDKit validation: OK
-Automated tests: 31/31 passing
+Visualization utilities: OK
+Automated tests: OK
 Full dataset without refinement: OK
 Full dataset with refinement: OK
 Streaming CSV export: OK
 JSON summary export: OK
+Editable package install: OK
 ```
 
 ## Additional Documentation
