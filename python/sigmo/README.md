@@ -23,7 +23,6 @@ python/sigmo/
 ├── pipeline.py
 ├── result.py
 ├── utils.py
-├── validation.py
 └── visualize.py
 ```
 
@@ -89,8 +88,10 @@ The Python package handles:
 - device selection;
 - result formatting;
 - explainability;
-- validation;
-- export utilities.
+- export utilities;
+- visualization helpers.
+
+RDKit is used for molecule parsing and visualization support. It is not used as a public validation or benchmarking layer in the current package.
 
 ---
 
@@ -164,6 +165,7 @@ Responsibilities:
 - expose the high-level Python API;
 - expose the kernel-level API;
 - keep imports centralized;
+- import `dpctl` before the native extension to reduce SYCL/Unified Runtime loading conflicts;
 - make the package easier to use from examples and notebooks.
 
 ---
@@ -177,17 +179,19 @@ Main functions include:
 ```python
 get_sycl_queue(...)
 get_default_queue()
+describe_queue(...)
 ```
 
 Typical behavior:
 
 ```text
-device="auto"  -> try GPU first, fallback to CPU
-device="gpu"   -> force GPU selection
-device="cpu"   -> force CPU selection
+device="auto"  -> try CUDA GPU, Level Zero GPU, OpenCL GPU, generic GPU, then CPU
+device="gpu"   -> try available GPU backends
+device="cuda"  -> try CUDA GPU selectors
+device="cpu"   -> try available CPU backends
 ```
 
-This allows user-facing APIs to accept simple device strings instead of requiring users to manually create SYCL queues.
+The environment variable `SIGMO_SYCL_DEVICE` can be used to override device selection.
 
 Example:
 
@@ -219,6 +223,8 @@ Supported inputs include:
 - SMARTS strings;
 - files containing SMARTS/SMILES;
 - Python lists of molecular strings;
+- RDKit `Mol` objects;
+- NetworkX graphs;
 - already constructed CSR graph dictionaries.
 
 Important functions include:
@@ -226,9 +232,13 @@ Important functions include:
 ```python
 make_csr_graph(...)
 toy_two_node_graph()
+chemical_string_to_csr(...)
 smarts_to_csr_from_string(...)
 smarts_to_csr(...)
 load_molecules(...)
+rdkit_mol_to_csr(...)
+to_networkx(...)
+from_networkx(...)
 ```
 
 The CSR graph format expected by SIGMo is represented as a Python dictionary:
@@ -268,6 +278,8 @@ aromatic bond  -> int(1.5) = 1
 This policy follows the original prototype behavior and avoids passing unsupported aromatic labels to the backend.
 
 An earlier explicit aromatic label caused native crashes in some cases, so the current version prioritizes compatibility and stability.
+
+This makes the CSR representation less chemically expressive than RDKit's full SMARTS semantics, but keeps the SIGMo backend stable.
 
 Responsibilities:
 
@@ -386,7 +398,6 @@ Responsibilities:
 - expose simple matching APIs;
 - load inputs through `graph.py`;
 - create and run `PipelineContext`;
-- optionally trigger RDKit validation;
 - return `MatchResult` objects.
 
 ---
@@ -471,9 +482,9 @@ For each iteration:
 4. read candidates_count from returned stats
 ```
 
-The implementation avoids unsafe direct reads from the internal `Candidates` object and relies on the statistics returned by the binding wrapper.
+The implementation keeps the same native `Signature`, `Candidates` and `GMCR` objects alive across all pipeline steps. This preserves the stateful execution model expected by the native SIGMo backend.
 
-This behavior is important because the candidate buffer is stored on the device and should be accessed carefully.
+Candidate counts and match statistics are read through safe statistics returned by the binding wrapper, rather than by reconstructing pipeline state.
 
 Responsibilities:
 
@@ -550,8 +561,7 @@ The result object stores:
 - kernel steps;
 - warnings;
 - errors;
-- raw result metadata;
-- optional validation metadata.
+- raw result metadata.
 
 Example:
 
@@ -565,54 +575,7 @@ Responsibilities:
 - transform raw C++/SYCL output into Python-friendly objects;
 - provide readable summaries;
 - explain the executed pipeline;
-- support CSV and JSON export;
-- store validation metadata.
-
----
-
-### `validation.py`
-
-This module provides optional validation against RDKit.
-
-Main function:
-
-```python
-validate_result_with_rdkit(...)
-```
-
-It compares SIGMo results with RDKit:
-
-```python
-target_mol.HasSubstructMatch(query_mol)
-```
-
-The validation result is stored in:
-
-```python
-result.validation
-```
-
-Example structure:
-
-```python
-{
-    "enabled": True,
-    "method": "RDKit HasSubstructMatch",
-    "checked_pairs": ...,
-    "agreements": ...,
-    "disagreements": ...,
-    "skipped": ...,
-    "passed": ...
-}
-```
-
-Responsibilities:
-
-- validate SIGMo matches against a known chemistry toolkit;
-- report agreements and disagreements;
-- support correctness checks on small or controlled datasets.
-
-Complete validation over very large datasets can be expensive and should be performed on subsets or samples.
+- support CSV and JSON export.
 
 ---
 
@@ -634,37 +597,55 @@ Responsibilities:
 
 ### `visualize.py`
 
-This module is currently empty.
+This module provides optional visualization utilities based on RDKit and, when available, NetworkX/Matplotlib.
 
-It is intentionally kept as a placeholder for future visualization features.
-
-Planned possible responsibilities include:
-
-- converting SIGMo CSR graphs to NetworkX graphs;
-- drawing query and data molecules;
-- visualizing molecule graphs;
-- displaying query-target match pairs;
-- integrating RDKit molecule drawing;
-- optionally highlighting matched substructures if atom-level mappings become available.
-
-At the moment, no public visualization API is implemented.
-
-The file is kept in the package to make the future extension point explicit.
-
-Possible future API examples:
+Main functions include:
 
 ```python
-sigmo.visualize.draw_molecule(...)
-sigmo.visualize.draw_graph(...)
-sigmo.visualize.draw_match(...)
+mol_from_input(...)
+draw_molecule(...)
+draw_match_pair(...)
+to_networkx(...)
+draw_graph(...)
 ```
 
-Current status:
+Supported visualization tasks include:
 
-```text
-visualize.py exists but is empty.
-No production code should depend on it yet.
+- drawing individual molecules;
+- drawing query-target molecule pairs;
+- highlighting query substructures inside target molecules using RDKit;
+- converting SIGMo CSR graphs to NetworkX graphs;
+- drawing internal SIGMo CSR graphs for debugging.
+
+Example:
+
+```python
+from sigmo.visualize import draw_molecule, draw_match_pair, draw_graph
+
+draw_molecule(
+    "CCO",
+    input_format="smiles",
+    output_path="examples/outputs/molecule.png",
+)
+
+draw_match_pair(
+    "CC",
+    "CCC",
+    query_format="smiles",
+    target_format="smiles",
+    output_path="examples/outputs/match_pair.png",
+    highlight=True,
+)
 ```
+
+Important note: match-pair highlighting is RDKit-based and is used only for visualization. Current SIGMo results are pair-level results, meaning that SIGMo reports that query graph `i` matches data graph `j`, but it does not expose an atom-level mapping for drawing.
+
+Responsibilities:
+
+- provide molecule rendering helpers;
+- provide CSR graph debug visualization;
+- keep visualization separate from the core native pipeline;
+- support examples and documentation without changing the backend.
 
 ---
 
@@ -693,8 +674,8 @@ Instead, it handles:
 input conversion
 pipeline orchestration
 result formatting
-validation
 export
+visualization helpers
 error/warning reporting
 ```
 
@@ -763,6 +744,21 @@ ctx.join(...)
 result = build_match_result(...)
 ```
 
+### Visualization flow
+
+```text
+SMILES / SMARTS / CSR graph
+   |
+   v
+sigmo.visualize
+   |
+   | draw_molecule()
+   | draw_match_pair()
+   | draw_graph()
+   v
+PNG image / NetworkX graph
+```
+
 ---
 
 ## Error and Warning Strategy
@@ -780,7 +776,6 @@ Examples:
 Refinement disabled because small graphs were detected.
 Force refine enabled on small graphs.
 Large result detected; matches are not materialized in MatchResult.
-RDKit validation skipped for very large result.
 ```
 
 Warnings are stored in:
@@ -830,24 +825,25 @@ When adding new functionality:
 3. Keep user-facing APIs in `matcher.py`.
 4. Keep pipeline execution in `pipeline.py`.
 5. Keep result formatting in `result.py`.
-6. Keep validation logic in `validation.py`.
-7. Keep visualization features in `visualize.py`.
-8. Add tests for every new public behavior.
+6. Keep visualization features in `visualize.py`.
+7. Add tests for every new public behavior.
 
 ---
 
 ## Testing This Package
 
-From the repository root:
+From the repository root, after building the native extension and installing the package in editable mode:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
-Current expected status:
+Recommended setup:
 
-```text
-31 passed
+```bash
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
+pytest tests -vv
 ```
 
 Important test coverage includes:
@@ -859,8 +855,8 @@ Important test coverage includes:
 - batch search;
 - `SIGMoMatcher`;
 - `PipelineContext`;
-- RDKit validation;
-- CSV/JSON export.
+- CSV/JSON export;
+- visualization utilities.
 
 ---
 
@@ -871,11 +867,9 @@ High-level API: implemented
 Batch API: implemented
 Object-oriented API: implemented
 Kernel-level API: implemented
-RDKit validation: implemented
 Result summary/explain: implemented
 CSV/JSON export: implemented
 Large-result support: implemented in examples/run_pipeline.py
-Visualization API: placeholder only
-Tests: 31/31 passing
+Visualization API: implemented
+Tests: passing
 ```
-

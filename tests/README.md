@@ -114,31 +114,6 @@ The shared queue fixture uses the same device-selection logic as the package, th
 
 ---
 
-## `helpers.py`
-
-This file contains common helper assertions used by multiple test files.
-
-The main helper is:
-
-```python
-assert_match_result(result)
-```
-
-This helper checks that a returned object behaves like a `MatchResult`, verifying that it exposes fields and methods such as:
-
-```text
-total_matches
-matches
-steps
-warnings
-summary()
-explain()
-```
-
-Keeping helper assertions in `helpers.py` avoids importing directly from `conftest.py` and keeps pytest fixtures separate from reusable test utilities.
-
----
-
 ## `test_graph.py`
 
 This file tests molecule loading and graph conversion.
