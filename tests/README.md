@@ -14,41 +14,57 @@ The current test suite checks:
 - object-oriented `SIGMoMatcher`;
 - `PipelineContext` step-by-step execution;
 - result export;
-- RDKit validation.
+- visualization utilities.
 
 Current expected status:
 
 ```text
-31 passed
+25 passed
 ```
 
 ---
 
 ## Running the Tests
 
-Run all tests from the repository root:
+Before running the tests, build the native extension and install the package in editable mode from the repository root:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
+Run all tests:
+
+```bash
+pytest tests -vv
 ```
 
 Compact output:
 
 ```bash
-PYTHONPATH=python pytest tests -q
+pytest tests -q
 ```
 
 Run a single test file:
 
 ```bash
-PYTHONPATH=python pytest tests/test_matcher.py -vv
+pytest tests/test_matcher.py -vv
 ```
 
 Run a single test:
 
 ```bash
-PYTHONPATH=python pytest tests/test_matcher.py::test_match_high_level_positive -vv
+pytest tests/test_matcher.py::test_match_high_level_positive -vv
 ```
+
+If the package has not been installed in editable mode, the temporary fallback is:
+
+```bash
+SIGMO_USE_PYTHONPATH=1 source scripts/dev_env.sh
+pytest tests -vv
+```
+
+However, the recommended workflow is to use the editable install.
 
 ---
 
@@ -57,12 +73,12 @@ PYTHONPATH=python pytest tests/test_matcher.py::test_match_high_level_positive -
 ```text
 tests/
 ├── conftest.py
+├── helpers.py
 ├── test_graph.py
 ├── test_low_level_kernels.py
 ├── test_matcher.py
 ├── test_pipeline.py
-├── test_validation.py
-├── test_validation_against_rdkit.py
+├── test_visualize.py
 └── README.md
 ```
 
@@ -80,8 +96,7 @@ It provides reusable objects such as:
 - simple CSR graphs;
 - `Signature` objects;
 - `Candidates` objects;
-- temporary SMARTS files;
-- helper assertions for `MatchResult`.
+- temporary SMARTS files.
 
 Main fixtures include:
 
@@ -95,7 +110,15 @@ sample_smarts_file
 invalid_smarts_file
 ```
 
-It also provides:
+The shared queue fixture uses the same device-selection logic as the package, through `get_default_queue()`.
+
+---
+
+## `helpers.py`
+
+This file contains common helper assertions used by multiple test files.
+
+The main helper is:
 
 ```python
 assert_match_result(result)
@@ -111,6 +134,8 @@ warnings
 summary()
 explain()
 ```
+
+Keeping helper assertions in `helpers.py` avoids importing directly from `conftest.py` and keeps pytest fixtures separate from reusable test utilities.
 
 ---
 
@@ -128,7 +153,7 @@ Covered functionality:
 - `smarts_to_csr()`;
 - `load_molecules()`;
 - automatic name generation;
-- invalid SMARTS handling;
+- invalid SMARTS/SMILES handling;
 - aromatic bond stability.
 
 Important checks include:
@@ -143,7 +168,7 @@ invalid molecules are skipped without crashing
 aromatic bonds do not introduce unsupported labels
 ```
 
-The aromatic stability test is important because explicit aromatic labels previously caused native backend crashes. The current conversion keeps bond labels compatible with the backend.
+The aromatic stability test is important because unsupported explicit aromatic labels previously caused native backend crashes. The current conversion maps RDKit aromatic bond order `1.5` to integer label `1`, keeping bond labels compatible with the backend.
 
 ---
 
@@ -239,49 +264,27 @@ The returned object must be a `MatchResult`.
 
 ---
 
-## `test_validation.py`
+## `test_visualize.py`
 
-This file tests integrated RDKit validation.
+This file tests the optional visualization utilities.
 
-It uses parametrized test cases comparing SIGMo and RDKit on simple controlled examples.
+Covered functionality:
 
-Example cases include:
+- SMILES parsing through `mol_from_input()`;
+- SMARTS parsing through `mol_from_input()`;
+- drawing a single molecule with `draw_molecule()`;
+- drawing a query-target pair with `draw_match_pair()`;
+- converting a SIGMo CSR graph to NetworkX with `to_networkx()`.
 
-```text
-CC inside CCC
-CO inside CCC
-C=O inside CC(=O)O
-N inside CCO
-benzene inside an aromatic target
+The tests verify that the visualization helpers return valid image/graph objects and do not interfere with the core SIGMo pipeline.
+
+NetworkX-specific tests use:
+
+```python
+pytest.importorskip("networkx")
 ```
 
-The tests verify:
-
-- SIGMo agrees with the expected result;
-- RDKit agrees with the expected result;
-- SIGMo and RDKit agree with each other;
-- `validate_with_rdkit=True` correctly populates `result.validation`.
-
-The validation object is expected to contain fields such as:
-
-```text
-enabled
-method
-checked_pairs
-agreements
-disagreements
-passed
-```
-
----
-
-## `test_validation_against_rdkit.py`
-
-This file provides an additional basic validation test against RDKit.
-
-It checks the same general idea as `test_validation.py`, but in a compact form.
-
-It is useful as a simple regression test to ensure that SIGMo still agrees with RDKit on core molecular substructure matching examples.
+so the test is skipped automatically if NetworkX is not installed.
 
 ---
 
@@ -330,15 +333,18 @@ refine_csr_signatures stops returning valid stats
 
 ---
 
-### Validation regressions
+### Visualization regressions
 
 For example:
 
 ```text
-validate_with_rdkit=True does not populate result.validation
-SIGMo and RDKit disagree on simple known cases
-validation result fields are missing
+draw_molecule() stops returning an image
+draw_match_pair() fails on valid query-target inputs
+CSR graphs cannot be converted to NetworkX
+visualization helpers import heavy optional dependencies too early
 ```
+
+Visualization tests are intentionally lightweight and do not validate visual aesthetics pixel-by-pixel.
 
 ---
 
@@ -383,7 +389,7 @@ This is because full dataset runs may involve:
 - millions of matches;
 - large CSV outputs.
 
-Such runs are useful for benchmarking and validation, but they are not appropriate for a regular unit test suite.
+Such runs are useful for benchmarking and performance checks, but they are not appropriate for a regular unit test suite.
 
 ---
 
@@ -392,32 +398,31 @@ Such runs are useful for benchmarking and validation, but they are not appropria
 Before committing changes, run:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
 Expected result:
 
 ```text
-31 passed
+25 passed
 ```
 
 Then optionally run lightweight examples:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
-PYTHONPATH=python python examples/validation_usage.py
+python examples/basic_usage.py
+python examples/advanced_pipeline.py
+python examples/run_pipeline.py --query-limit 5 --data-limit 20 --iterations 0
+python examples/visualization_usage.py
 ```
 
 For pipeline or performance checks, use:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
-  --query-limit 100 \
-  --data-limit 5000 \
-  --iterations 6 \
-  --force-refine \
-  --max-print-matches 20
+python examples/run_pipeline.py   --query-limit 100   --data-limit 5000   --iterations 6   --force-refine   --max-print-matches 20
 ```
+
+Generated outputs in `examples/outputs/` should not normally be committed.
 
 ---
 
@@ -431,7 +436,7 @@ When adding new package features, add tests in the appropriate file:
 | Low-level kernel wrappers | `test_low_level_kernels.py` |
 | High-level API | `test_matcher.py` |
 | Pipeline orchestration | `test_pipeline.py` |
-| RDKit validation | `test_validation.py` |
+| Visualization utilities | `test_visualize.py` |
 | Export behavior | `test_matcher.py` or a dedicated export test |
 
 Test names should describe the behavior being checked.
@@ -454,31 +459,31 @@ Avoid adding full dataset tests to the regular pytest suite.
 Useful commands:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
 Show print output:
 
 ```bash
-PYTHONPATH=python pytest tests -vv -s
+pytest tests -vv -s
 ```
 
 Run only matcher tests:
 
 ```bash
-PYTHONPATH=python pytest tests/test_matcher.py -vv
+pytest tests/test_matcher.py -vv
 ```
 
 Run only pipeline tests:
 
 ```bash
-PYTHONPATH=python pytest tests/test_pipeline.py -vv
+pytest tests/test_pipeline.py -vv
 ```
 
-Run only validation tests:
+Run only visualization tests:
 
 ```bash
-PYTHONPATH=python pytest tests/test_validation.py -vv
+pytest tests/test_visualize.py -vv
 ```
 
 If a test returns `None` instead of `MatchResult`, check:
@@ -489,6 +494,16 @@ If a test returns `None` instead of `MatchResult`, check:
 
 These methods must always return the result object.
 
+If imports fail, verify that the package has been installed in editable mode:
+
+```bash
+python - <<'PY'
+import sigmo
+print(sigmo.__file__)
+print("SIGMo import OK")
+PY
+```
+
 ---
 
 ## Current Status
@@ -498,8 +513,8 @@ Graph conversion tests: passing
 Low-level kernel tests: passing
 High-level API tests: passing
 PipelineContext tests: passing
-RDKit validation tests: passing
+Visualization tests: passing
 Export tests: passing
 
-Current expected result: 31 passed
+Current expected result: 25 passed
 ```
