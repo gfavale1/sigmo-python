@@ -1,0 +1,14 @@
+name: hpc_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - cmake
+  - ninja
+  - pybind11
+  - pytest
+  - pandas
+  - networkx
+  - matplotlib
+  - pillow
+  - pip

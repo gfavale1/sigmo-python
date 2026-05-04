@@ -32,6 +32,7 @@ examples/outputs/*
 
 # Local environment backups
 env_backups/
+old_native_backups/
 
 # Local CMake artifacts
 external/CMakeCache.txt
