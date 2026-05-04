@@ -20,31 +20,40 @@ sigmo-python/
 ├── python/
 │   └── sigmo/
 │       ├── __init__.py
+│       ├── config.py
 │       ├── graph.py
 │       ├── matcher.py
 │       ├── pipeline.py
 │       ├── result.py
-│       ├── validation.py
+│       ├── utils.py
+│       ├── visualize.py
 │       └── ...
 │
 ├── examples/
 │   ├── basic_usage.py
-│   ├── validation_usage.py
 │   ├── advanced_pipeline.py
 │   ├── run_pipeline.py
+│   ├── visualization_usage.py
 │   └── outputs/
 │
 ├── tests/
 ├── docs/
 ├── benchmarks/
+├── scripts/
+│   ├── build.sh
+│   └── dev_env.sh
+├── setup.py
 └── pyproject.toml
 ```
 
-During development, the package is usually executed directly from the repository root using:
+During development, the recommended workflow is:
 
 ```bash
-PYTHONPATH=python
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
 ```
+
+After the editable installation, examples and tests can be executed without setting `PYTHONPATH` manually.
 
 ---
 
@@ -55,7 +64,7 @@ The exact build requirements may depend on the native SIGMo backend configuratio
 The current development setup assumes:
 
 - Python environment with SIGMo dependencies installed;
-- RDKit for molecule parsing and optional validation;
+- RDKit for molecule parsing and visualization support;
 - dpctl for SYCL queue/device handling;
 - pytest for testing;
 - a working C++/SYCL toolchain for the native backend;
@@ -73,9 +82,14 @@ Optional dependencies:
 
 ```text
 pandas
+networkx
+matplotlib
+pillow
 ```
 
 `pandas` is only needed for DataFrame-based workflows. CSV export in the current interface can also work without pandas.
+
+`networkx` and `matplotlib` are only needed for CSR graph visualization through `sigmo.visualize.draw_graph()`.
 
 ---
 
@@ -87,6 +101,7 @@ Example:
 
 ```bash
 conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
 ```
 
 From the repository root:
@@ -101,51 +116,109 @@ Verify Python:
 python --version
 ```
 
-Verify that the package can be imported from source:
+Build the native extension:
 
 ```bash
-PYTHONPATH=python python -c "import sigmo; print('SIGMo import OK')"
+./scripts/build.sh
 ```
 
-If this fails, the native extension or the Python path is not correctly configured.
-
----
-
-## Running From Source
-
-The current development workflow runs the package directly from the local `python/` directory.
-
-Use:
+Install the package in editable mode:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
+python -m pip install -e . --no-build-isolation --no-deps
 ```
 
-or:
-
-```bash
-PYTHONPATH=python pytest tests -vv
-```
-
-This avoids requiring installation into site-packages during development.
-
----
-
-## Editable Installation
-
-If the project packaging is configured through `pyproject.toml`, it may also be possible to install the project in editable mode:
-
-```bash
-pip install -e .
-```
-
-Then imports should work without manually setting `PYTHONPATH`:
+Verify that the package can be imported:
 
 ```bash
 python -c "import sigmo; print('SIGMo import OK')"
 ```
 
-If editable installation is not currently configured or does not expose the native extension correctly, use the `PYTHONPATH=python` workflow.
+To check which source tree is being imported:
+
+```bash
+python - <<'PY'
+import sigmo
+print(sigmo.__file__)
+PY
+```
+
+The printed path should point to the local repository, for example:
+
+```text
+/path/to/sigmo-python/python/sigmo/__init__.py
+```
+
+---
+
+## Running From Source
+
+The recommended development workflow uses an editable installation.
+
+After running:
+
+```bash
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
+you can run examples directly:
+
+```bash
+python examples/basic_usage.py
+```
+
+or run tests:
+
+```bash
+pytest tests -vv
+```
+
+The editable installation points Python to the local `python/sigmo/` source tree. If Python files are modified, reinstalling is not required.
+
+If C++/pybind11/CMake files are modified, rebuild the native extension:
+
+```bash
+./scripts/build.sh
+```
+
+A fallback source-only workflow is still possible through `scripts/dev_env.sh`:
+
+```bash
+SIGMO_USE_PYTHONPATH=1 source scripts/dev_env.sh
+```
+
+This fallback is useful for debugging, but editable installation is the preferred workflow.
+
+---
+
+## Editable Installation
+
+The project can be installed in editable mode:
+
+```bash
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
+The flags are intentional:
+
+- `--no-build-isolation` avoids creating a temporary isolated build environment;
+- `--no-deps` avoids reinstalling sensitive packages such as `dpctl`.
+
+This is useful because the SYCL/dpctl environment can be version-sensitive.
+
+After editable installation, imports should work without manually setting `PYTHONPATH`:
+
+```bash
+python -c "import sigmo; print('SIGMo import OK')"
+```
+
+You normally need to run the editable installation only once per environment.
+
+Run it again only if:
+
+- a new Conda environment is created;
+- the package is uninstalled;
+- packaging files such as `setup.py` or `pyproject.toml` are changed significantly.
 
 ---
 
@@ -153,25 +226,31 @@ If editable installation is not currently configured or does not expose the nati
 
 The Python interface depends on the native SIGMo binding.
 
-Depending on the current repository configuration, the native extension may be built through CMake, Python packaging, or a custom build script.
-
-A typical CMake-style native build may look like:
+The recommended build command is:
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-cmake --build . -j
+./scripts/build.sh
 ```
 
-However, the exact command may differ depending on:
+This script configures and builds the CMake project and places the compiled native module under:
 
-- compiler;
-- SYCL implementation;
-- CUDA/ROCm/Level Zero backend;
-- local SIGMo build configuration;
-- pybind11 configuration;
-- target device.
+```text
+python/sigmo/_core*.so
+```
+
+The script supports optional environment variables:
+
+```bash
+BUILD_TYPE=Debug ./scripts/build.sh
+JOBS=4 ./scripts/build.sh
+BUILD_DIR=build-debug ./scripts/build.sh
+```
+
+It also accepts additional CMake arguments:
+
+```bash
+./scripts/build.sh -DCMAKE_CXX_COMPILER=icpx
+```
 
 If using a SYCL compiler such as Intel `icpx`/`dpcpp`, make sure the compiler is visible:
 
@@ -185,7 +264,7 @@ If targeting NVIDIA GPUs through SYCL/CUDA, make sure the CUDA-capable backend a
 After building, verify that the Python binding is importable:
 
 ```bash
-PYTHONPATH=python python -c "import sigmo; print(sigmo)"
+python -c "import sigmo; print(sigmo)"
 ```
 
 ---
@@ -197,7 +276,7 @@ The Python interface uses `dpctl` to create SYCL queues.
 To check the selected default device:
 
 ```bash
-PYTHONPATH=python python - <<'PY'
+python - <<'PY'
 import sigmo
 from sigmo.config import get_default_queue
 
@@ -209,7 +288,7 @@ PY
 To test a specific device:
 
 ```bash
-PYTHONPATH=python python - <<'PY'
+python - <<'PY'
 from sigmo.config import get_sycl_queue
 
 q = get_sycl_queue("gpu")
@@ -220,11 +299,20 @@ PY
 or:
 
 ```bash
-PYTHONPATH=python python - <<'PY'
+python - <<'PY'
 from sigmo.config import get_sycl_queue
 
 q = get_sycl_queue("cpu")
 print("CPU device:", q.sycl_device.name)
+PY
+```
+
+You can also inspect devices directly through `dpctl`:
+
+```bash
+python - <<'PY'
+import dpctl
+print(dpctl.get_devices())
 PY
 ```
 
@@ -235,31 +323,31 @@ PY
 After building or changing the environment, run a minimal import test:
 
 ```bash
-PYTHONPATH=python python -c "import sigmo; print('import OK')"
+python -c "import sigmo; print('import OK')"
 ```
 
 Run the basic example:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
+python examples/basic_usage.py
 ```
 
-Run the validation example:
+Run the visualization example:
 
 ```bash
-PYTHONPATH=python python examples/validation_usage.py
+python examples/visualization_usage.py
 ```
 
 Run the full test suite:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
 Expected result:
 
 ```text
-31 passed
+all tests passing
 ```
 
 ---
@@ -276,25 +364,31 @@ The test suite checks:
 - batch search API;
 - `SIGMoMatcher`;
 - `PipelineContext`;
-- RDKit validation;
-- CSV/JSON export.
+- CSV/JSON export;
+- visualization utilities.
 
 Run all tests:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
 Run compact tests:
 
 ```bash
-PYTHONPATH=python pytest tests -q
+pytest tests -q
 ```
 
 Run a single test file:
 
 ```bash
-PYTHONPATH=python pytest tests/test_matcher.py -vv
+pytest tests/test_matcher.py -vv
+```
+
+Run visualization tests:
+
+```bash
+pytest tests/test_visualize.py -vv
 ```
 
 ---
@@ -304,19 +398,25 @@ PYTHONPATH=python pytest tests/test_matcher.py -vv
 ### Basic usage
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
-```
-
-### RDKit validation
-
-```bash
-PYTHONPATH=python python examples/validation_usage.py
+python examples/basic_usage.py
 ```
 
 ### Advanced pipeline
 
 ```bash
-PYTHONPATH=python python examples/advanced_pipeline.py
+python examples/advanced_pipeline.py
+```
+
+### Visualization usage
+
+```bash
+python examples/visualization_usage.py
+```
+
+This generates PNG files under:
+
+```text
+examples/outputs/
 ```
 
 ### Kernel-level command-line pipeline
@@ -324,13 +424,13 @@ PYTHONPATH=python python examples/advanced_pipeline.py
 Small default run:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py
+python examples/run_pipeline.py
 ```
 
 Medium run with refinement:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 100 \
   --data-limit 5000 \
   --iterations 6 \
@@ -341,7 +441,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 Full dataset run with refinement and export:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -395,7 +495,7 @@ The repository should track only:
 examples/outputs/.gitkeep
 ```
 
-Generated CSV and JSON outputs should normally be ignored by Git.
+Generated PNG, CSV and JSON outputs should normally be ignored by Git.
 
 Recommended `.gitignore` rules:
 
@@ -437,6 +537,7 @@ find . -type d -name ".pytest_cache" -exec rm -rf {} +
 To remove generated example outputs:
 
 ```bash
+rm -f examples/outputs/*.png
 rm -f examples/outputs/*.csv
 rm -f examples/outputs/*.json
 ```
@@ -455,16 +556,25 @@ unless you intentionally want to remove the placeholder.
 
 ### `ModuleNotFoundError: No module named 'sigmo'`
 
-Make sure you are running from the repository root and using:
+Make sure the package has been installed in editable mode from the repository root:
 
 ```bash
-PYTHONPATH=python
+python -m pip install -e . --no-build-isolation --no-deps
 ```
 
-Example:
+Then verify:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
+python - <<'PY'
+import sigmo
+print(sigmo.__file__)
+PY
+```
+
+If you intentionally want to run without editable installation, source the fallback development environment:
+
+```bash
+SIGMO_USE_PYTHONPATH=1 source scripts/dev_env.sh
 ```
 
 ---
@@ -480,7 +590,11 @@ find . -name "*.so"
 find . -name "*.pyd"
 ```
 
-Then rebuild the native extension according to the current backend build configuration.
+Then rebuild the native extension:
+
+```bash
+./scripts/build.sh
+```
 
 ---
 
@@ -502,16 +616,16 @@ If no GPU appears, check:
 - CUDA/Level Zero/ROCm support;
 - environment variables required by the backend.
 
-You can also try CPU execution:
-
-```bash
-PYTHONPATH=python python examples/basic_usage.py
-```
-
-or explicitly:
+You can also try CPU execution by passing:
 
 ```python
 device="cpu"
+```
+
+or by running a standard example:
+
+```bash
+python examples/basic_usage.py
 ```
 
 ---
@@ -531,7 +645,7 @@ Useful debugging steps:
 Example:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 5 \
   --data-limit 20 \
   --iterations 0 \
@@ -541,12 +655,37 @@ PYTHONPATH=python python examples/run_pipeline.py \
 Then try refinement:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 5 \
   --data-limit 20 \
   --iterations 6 \
   --force-refine \
   --max-print-matches 20
+```
+
+---
+
+### Clock skew detected during build
+
+When working under `/mnt/c` in WSL, CMake or Make may report:
+
+```text
+Clock skew detected. Your build may be incomplete.
+```
+
+This is usually caused by timestamp differences between Windows and WSL file systems.
+
+If the build still completes successfully, it is often harmless. If it becomes persistent, try:
+
+```bash
+find . -exec touch {} +
+./scripts/build.sh
+```
+
+A more stable long-term solution is to work from a native Linux directory such as:
+
+```text
+~/projects/sigmo-python
 ```
 
 ---
@@ -593,32 +732,46 @@ A typical development cycle is:
 
 ```bash
 conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
 cd /path/to/sigmo-python
+```
+
+Build the native extension:
+
+```bash
+./scripts/build.sh
+```
+
+Install the package in editable mode:
+
+```bash
+python -m pip install -e . --no-build-isolation --no-deps
 ```
 
 Verify import:
 
 ```bash
-PYTHONPATH=python python -c "import sigmo; print('import OK')"
+python -c "import sigmo; print('import OK')"
 ```
 
 Run tests:
 
 ```bash
-PYTHONPATH=python pytest tests -vv
+pytest tests -vv
 ```
 
 Run examples:
 
 ```bash
-PYTHONPATH=python python examples/basic_usage.py
-PYTHONPATH=python python examples/validation_usage.py
+python examples/basic_usage.py
+python examples/advanced_pipeline.py
+python examples/visualization_usage.py
 ```
 
 Run a small pipeline:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 100 \
   --data-limit 5000 \
   --iterations 6 \
@@ -637,11 +790,12 @@ The current expected status of the Python interface is:
 ```text
 import sigmo: OK
 basic_usage.py: OK
-validation_usage.py: OK
-pytest tests: 31 passed
+advanced_pipeline.py: OK
+visualization_usage.py: OK
+pytest tests: OK
 full dataset without refinement: OK
 full dataset with 6 refinements: OK
 CSV streaming export: OK
 JSON summary export: OK
+editable package install: OK
 ```
-

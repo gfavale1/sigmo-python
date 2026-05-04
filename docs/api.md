@@ -8,6 +8,7 @@ The API is organized into multiple abstraction levels:
 2. **Object-oriented API**: reusable matcher object through `SIGMoMatcher`.
 3. **Pipeline API**: explicit kernel-level orchestration through `PipelineContext`.
 4. **Low-level kernel API**: direct access to native SIGMo C++/SYCL bindings.
+5. **Visualization API**: optional helpers for drawing molecules, CSR graphs and query-target pairs.
 
 Most users should start from the high-level API.  
 Advanced users can use `PipelineContext` or the low-level kernels when they need more control.
@@ -16,13 +17,17 @@ Advanced users can use `PipelineContext` or the low-level kernels when they need
 
 ## Importing the Package
 
-From the repository root, during development:
+During development, build the native extension and install the package in editable mode from the repository root:
 
 ```bash
-PYTHONPATH=python python
+conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
+
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
 ```
 
-Then:
+Then the package can be imported normally:
 
 ```python
 import sigmo
@@ -54,6 +59,12 @@ sigmo.refine_candidates
 sigmo.join_candidates
 ```
 
+Visualization helpers are available from the `sigmo.visualize` module:
+
+```python
+from sigmo.visualize import draw_molecule, draw_match_pair, draw_graph
+```
+
 ---
 
 ## API Layers
@@ -67,6 +78,7 @@ The recommended API choice depends on the use case.
 | Reuse matcher configuration | `sigmo.SIGMoMatcher` |
 | Execute pipeline step by step | `sigmo.PipelineContext` |
 | Call native kernels directly | Low-level kernel API |
+| Draw molecules, CSR graphs or match pairs | `sigmo.visualize` |
 
 ---
 
@@ -88,7 +100,6 @@ sigmo.match(
     find_first=True,
     device="auto",
     queue=None,
-    validate_with_rdkit=False,
 )
 ```
 
@@ -101,9 +112,8 @@ sigmo.match(
 | `input_format` | `str` | `"auto"`, `"smiles"` or `"smarts"` |
 | `iterations` | `int` | Number of refinement iterations |
 | `find_first` | `bool` | Stop at first match per pair when supported |
-| `device` | `str` | `"auto"`, `"gpu"`, `"cpu"` or device selector |
+| `device` | `str` | `"auto"`, `"gpu"`, `"cpu"`, `"cuda"` or an explicit SYCL selector |
 | `queue` | optional | Existing SYCL queue |
-| `validate_with_rdkit` | `bool` | Whether to validate the result against RDKit |
 
 ### Returns
 
@@ -129,23 +139,6 @@ print(result.summary())
 print(result.explain())
 ```
 
-### Example with RDKit validation
-
-```python
-import sigmo
-
-result = sigmo.match(
-    query="c1ccccc1",
-    target="CCOC(=O)c1ccccc1",
-    input_format="smiles",
-    iterations=0,
-    validate_with_rdkit=True,
-)
-
-print(result.summary())
-print(result.validation)
-```
-
 ### Notes
 
 `sigmo.match()` is the easiest entry point. It hides:
@@ -155,6 +148,8 @@ print(result.validation)
 - SYCL queue creation;
 - SIGMo structure allocation;
 - kernel orchestration.
+
+RDKit is used for parsing molecular strings, but this function does not perform RDKit-based validation or benchmarking.
 
 ---
 
@@ -177,7 +172,6 @@ sigmo.search(
     device="auto",
     queue=None,
     strict=False,
-    validate_with_rdkit=False,
 )
 ```
 
@@ -193,7 +187,6 @@ sigmo.search(
 | `device` | `str` | `"auto"`, `"gpu"`, `"cpu"` or device selector |
 | `queue` | optional | Existing SYCL queue |
 | `strict` | `bool` | Whether invalid inputs should raise errors |
-| `validate_with_rdkit` | `bool` | Whether to validate results against RDKit |
 
 ### Returns
 
@@ -256,7 +249,6 @@ sigmo.run_isomorphism(
     device="auto",
     find_first=True,
     iterations=1,
-    validate_with_rdkit=False,
 )
 ```
 
@@ -270,7 +262,6 @@ sigmo.run_isomorphism(
 | `device` | `str` | Device selection string |
 | `find_first` | `bool` | Stop at first match per pair when supported |
 | `iterations` | `int` | Number of refinement iterations |
-| `validate_with_rdkit` | `bool` | Whether to validate with RDKit |
 
 ### Returns
 
@@ -320,7 +311,6 @@ matcher = sigmo.SIGMoMatcher(
     find_first=True,
     input_format="auto",
     strict=False,
-    validate_with_rdkit=False,
 )
 ```
 
@@ -334,7 +324,6 @@ matcher = sigmo.SIGMoMatcher(
 | `find_first` | `bool` | Default join behavior |
 | `input_format` | `str` | Default input format |
 | `strict` | `bool` | Whether invalid inputs should raise errors |
-| `validate_with_rdkit` | `bool` | Enable RDKit validation by default |
 
 ---
 
@@ -460,6 +449,7 @@ Each graph dictionary has fields such as:
 | `str` molecule | Single SMARTS/SMILES string |
 | `list[str]` | List of molecular strings |
 | `list[dict]` | Already converted CSR graphs |
+| `list[RDKit Mol]` | Existing RDKit molecule objects |
 
 ### Notes
 
@@ -512,6 +502,8 @@ Mapping:
 Aromatic bonds are currently collapsed to label `1` for backend compatibility.
 
 This behavior follows the original prototype and avoids unsupported labels that previously caused native crashes.
+
+This means that the CSR representation is stable for the SIGMo backend, but it does not preserve the full chemical semantics of RDKit SMARTS.
 
 ---
 
@@ -787,7 +779,6 @@ Structured result object returned by high-level APIs.
 | `warnings` | Execution warnings |
 | `errors` | Execution errors |
 | `raw_result` | Raw backend result metadata |
-| `validation` | Optional RDKit validation metadata |
 
 ---
 
@@ -812,7 +803,7 @@ Matches found
 Refinement iterations
 Kernel steps
 Warnings
-Validation summary
+Errors
 ```
 
 ---
@@ -912,74 +903,6 @@ For large result sets, prefer JSON summary export from `examples/run_pipeline.py
 
 ---
 
-# Validation API
-
-## `validate_with_rdkit=True`
-
-High-level APIs support optional RDKit validation.
-
-Example:
-
-```python
-result = sigmo.match(
-    query="c1ccccc1",
-    target="CCOC(=O)c1ccccc1",
-    validate_with_rdkit=True,
-)
-```
-
-Validation metadata is stored in:
-
-```python
-result.validation
-```
-
----
-
-## `sigmo.validate_result_with_rdkit()`
-
-Function used internally to validate a `MatchResult`.
-
-### Typical usage
-
-```python
-from sigmo.validation import validate_result_with_rdkit
-
-result = validate_result_with_rdkit(
-    result,
-    query_graphs,
-    data_graphs,
-)
-```
-
-### Validation method
-
-The validation uses RDKit:
-
-```python
-target_mol.HasSubstructMatch(query_mol)
-```
-
-### Validation fields
-
-| Field | Description |
-|---|---|
-| `enabled` | Whether validation was enabled |
-| `method` | Validation method |
-| `checked_pairs` | Number of checked query-data pairs |
-| `agreements` | Number of agreements |
-| `disagreements` | List of disagreements |
-| `skipped` | Skipped pairs |
-| `passed` | Whether validation passed |
-
-### Notes
-
-RDKit validation is best suited for small datasets or sampled subsets.
-
-Complete validation on very large datasets can be expensive.
-
----
-
 # Device API
 
 ## `sigmo.config.get_sycl_queue()`
@@ -1001,6 +924,12 @@ Supported selectors include:
 auto
 gpu
 cpu
+cuda
+cuda:gpu
+cuda:gpu:0
+level_zero:gpu
+opencl:gpu
+opencl:cpu
 ```
 
 ---
@@ -1137,35 +1066,119 @@ Most users should not need to instantiate them directly.
 
 # Visualization API
 
-The package contains a placeholder file:
-
-```text
-visualize.py
-```
-
-At the moment, no public visualization API is implemented.
-
-The file is reserved for future features such as:
+Visualization helpers are implemented in:
 
 ```python
-sigmo.visualize.draw_graph(...)
-sigmo.visualize.draw_molecule(...)
-sigmo.visualize.draw_match(...)
+sigmo.visualize
 ```
 
-Possible future functionality:
+They are optional and are not required by the core SIGMo pipeline.
 
-- CSR graph visualization;
-- NetworkX conversion;
-- RDKit molecule drawing;
-- query-target visualization;
-- matched substructure highlighting.
+---
 
-Current status:
+## `mol_from_input()`
 
-```text
-visualize.py exists but is empty.
-No production code should depend on it yet.
+Converts a SMILES/SMARTS string or RDKit Mol into an RDKit Mol.
+
+### Example
+
+```python
+from sigmo.visualize import mol_from_input
+
+mol = mol_from_input("CCO", input_format="smiles")
+```
+
+---
+
+## `draw_molecule()`
+
+Draws a single molecule and optionally saves it to disk.
+
+### Example
+
+```python
+from sigmo.visualize import draw_molecule
+
+draw_molecule(
+    "CCO",
+    input_format="smiles",
+    output_path="examples/outputs/molecule.png",
+    legend="Ethanol",
+)
+```
+
+---
+
+## `draw_match_pair()`
+
+Draws a query-target pair.
+
+If `highlight=True`, RDKit is used to highlight one query substructure occurrence inside the target molecule.
+
+### Example
+
+```python
+from sigmo.visualize import draw_match_pair
+
+draw_match_pair(
+    "CC",
+    "CCC",
+    query_format="smiles",
+    target_format="smiles",
+    output_path="examples/outputs/match_pair.png",
+    legends=("Query", "Target"),
+    highlight=True,
+)
+```
+
+### Important note
+
+The highlight is RDKit-based and is used only for visualization.  
+Current SIGMo results are pair-level results: SIGMo reports that query graph `i` matches data graph `j`, but it does not expose an atom-level mapping for drawing.
+
+---
+
+## `to_networkx()`
+
+Converts a SIGMo CSR graph dictionary into a NetworkX graph.
+
+### Example
+
+```python
+import sigmo
+from sigmo.visualize import to_networkx
+
+graphs = sigmo.load_molecules(["CCO"], input_format="smiles")
+G = to_networkx(graphs[0])
+```
+
+---
+
+## `draw_graph()`
+
+Draws an internal SIGMo CSR graph using NetworkX and Matplotlib.
+
+This is intended for debugging the CSR representation, not for chemically accurate molecule rendering.
+
+### Example
+
+```python
+import sigmo
+from sigmo.visualize import draw_graph
+
+graphs = sigmo.load_molecules(["CCO"], input_format="smiles")
+
+draw_graph(
+    graphs[0],
+    output_path="examples/outputs/csr_graph_small.png",
+    layout="spring",
+)
+```
+
+Run the full visualization example:
+
+```bash
+python examples/visualization_usage.py
 ```
 
 ---
@@ -1210,14 +1223,7 @@ ctx.join()
 Use:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
-  --query-limit -1 \
-  --data-limit -1 \
-  --iterations 6 \
-  --force-refine \
-  --max-print-matches 0 \
-  --csv examples/outputs/matches_full_refine.csv \
-  --json examples/outputs/matches_full_refine_summary.json
+python examples/run_pipeline.py   --query-limit -1   --data-limit -1   --iterations 6   --force-refine   --max-print-matches 0   --csv examples/outputs/matches_full_refine.csv   --json examples/outputs/matches_full_refine_summary.json
 ```
 
 ---
@@ -1238,7 +1244,7 @@ sigmo.MatchResult
 
 The low-level kernel API is available but should be considered advanced.
 
-The visualization API is not implemented yet.
+The visualization API is available, but it should be considered an optional utility layer rather than part of the core matching pipeline.
 
 ---
 
@@ -1250,9 +1256,8 @@ Batch API: available
 Object-oriented API: available
 Pipeline API: available
 Low-level kernel API: available
-RDKit validation: available
 Result summary/explain: available
 CSV/JSON export: available
-Visualization API: placeholder only
-Tests: 31/31 passing
+Visualization API: available
+Tests: passing
 ```

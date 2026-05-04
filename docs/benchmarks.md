@@ -45,10 +45,20 @@ The benchmark runs documented here were executed on:
 GPU: NVIDIA GeForce RTX 3060 Laptop GPU
 ```
 
+Before running the benchmark commands, build the native extension and install the package in editable mode from the repository root:
+
+```bash
+conda activate hpc_env
+source /opt/intel/oneapi/setvars.sh
+
+./scripts/build.sh
+python -m pip install -e . --no-build-isolation --no-deps
+```
+
 Typical command prefix:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py
+python examples/run_pipeline.py
 ```
 
 ---
@@ -155,7 +165,7 @@ and skips refinement.
 ### Command without export
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 0 \
@@ -165,7 +175,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 ### Command with export
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 0 \
@@ -211,7 +221,7 @@ join candidates
 ### Command without export
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -222,7 +232,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 ### Command with export
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -351,7 +361,7 @@ A smaller run was also used to validate the pipeline before executing the full d
 ### Command
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 100 \
   --data-limit 5000 \
   --iterations 6 \
@@ -397,7 +407,7 @@ A small run was used during development to verify the individual refinement kern
 ### Command
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 5 \
   --data-limit 20 \
   --iterations 6 \
@@ -471,7 +481,7 @@ To force the complete pipeline, use:
 Example:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -554,7 +564,7 @@ It intentionally does not contain all matches.
 For a quick sanity check:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 5 \
   --data-limit 20 \
   --iterations 0 \
@@ -564,7 +574,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 For a medium refinement test:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit 100 \
   --data-limit 5000 \
   --iterations 6 \
@@ -575,7 +585,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 For a full no-refinement baseline:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 0 \
@@ -586,7 +596,7 @@ PYTHONPATH=python python examples/run_pipeline.py \
 For a full refinement run:
 
 ```bash
-PYTHONPATH=python python examples/run_pipeline.py \
+python examples/run_pipeline.py \
   --query-limit -1 \
   --data-limit -1 \
   --iterations 6 \
@@ -606,7 +616,6 @@ Future benchmark work could include:
 - comparing CPU and GPU execution;
 - measuring total pipeline time, not only kernel timings;
 - measuring memory usage;
-- comparing SIGMo results against RDKit on sampled subsets;
 - testing different dataset sizes;
 - testing compact CSV output;
 - testing `find_first=True` versus `find_first=False`;

@@ -15,7 +15,7 @@ The Python interface was designed with the following goals:
 - support batch molecular search on SMARTS/SMILES datasets;
 - preserve kernel-level access for debugging and benchmarking;
 - provide explainable outputs through summaries and execution traces;
-- support optional validation against RDKit;
+- support molecule, CSR graph and query-target visualization;
 - handle very large result sets without exhausting memory;
 - keep the binding thin and move usability logic to Python.
 
@@ -27,8 +27,10 @@ Native SIGMo backend
 
 Python interface
     input handling, pipeline orchestration, result formatting,
-    validation, examples, tests, large-output management
+    visualization, examples, tests, large-output management
 ```
+
+RDKit is used by the Python layer for molecule parsing and visualization support. It is not used as a public validation or benchmarking layer in the current interface.
 
 ---
 
@@ -106,7 +108,6 @@ python/sigmo/
 ├── pipeline.py
 ├── result.py
 ├── utils.py
-├── validation.py
 └── visualize.py
 ```
 
@@ -120,9 +121,8 @@ Each module has a specific responsibility.
 | `matcher.py` | High-level and object-oriented matching API |
 | `pipeline.py` | Kernel-level pipeline orchestration |
 | `result.py` | Structured result objects and output formatting |
-| `validation.py` | Optional RDKit-based validation |
 | `utils.py` | Utility and compatibility helpers |
-| `visualize.py` | Placeholder for future visualization features |
+| `visualize.py` | Optional molecule, match-pair and CSR graph visualization |
 
 ---
 
@@ -257,6 +257,7 @@ Supported input types include:
 - SMARTS strings;
 - files containing SMARTS/SMILES;
 - Python lists of molecular strings;
+- RDKit `Mol` objects;
 - already constructed CSR graph dictionaries.
 
 The main input function is:
@@ -349,6 +350,8 @@ This choice was made for backend compatibility.
 
 An alternative explicit aromatic label was tested during development, but it caused native backend instability in some cases. The current policy follows the original prototype behavior and avoids passing unsupported labels to the C++/SYCL kernels.
 
+This makes the CSR representation less chemically expressive than RDKit's full SMARTS semantics, but keeps the SIGMo backend stable.
+
 Future versions may add a configurable aromatic policy if explicit aromatic support is validated in the backend.
 
 ---
@@ -363,6 +366,8 @@ The user can request:
 device="auto"
 device="gpu"
 device="cpu"
+device="cuda"
+device="cuda:gpu"
 ```
 
 The typical flow is:
@@ -370,8 +375,12 @@ The typical flow is:
 ```text
 device="auto"
    |
-   | try GPU
-   | if unavailable, try CPU
+   | try CUDA GPU
+   | try Level Zero GPU
+   | try OpenCL GPU
+   | try generic GPU
+   | try OpenCL CPU
+   | try generic CPU
    v
 dpctl.SyclQueue
 ```
@@ -403,6 +412,8 @@ last_candidates_count
 ```
 
 Its main role is to orchestrate the backend kernels in a reproducible order.
+
+The context intentionally keeps the same native `Signature`, `Candidates` and `GMCR` objects alive across the full pipeline. Recreating these objects between steps would break the stateful execution model expected by the native SIGMo backend.
 
 ---
 
@@ -637,7 +648,6 @@ steps
 warnings
 errors
 raw_result
-validation
 ```
 
 It provides:
@@ -645,6 +655,8 @@ It provides:
 ```python
 result.summary()
 result.explain()
+result.to_records()
+result.to_dataframe()
 result.to_csv(...)
 result.to_json(...)
 ```
@@ -679,42 +691,33 @@ This is important because users can understand not only the final number of matc
 
 ---
 
-## Validation Architecture
+## Visualization Architecture
 
-Optional validation is implemented in `validation.py`.
-
-The validation flow is:
+Visualization is implemented in:
 
 ```text
-MatchResult
-   |
-   v
-validate_result_with_rdkit()
-   |
-   | for each query-data pair:
-   |     parse query with RDKit
-   |     parse target with RDKit
-   |     run HasSubstructMatch
-   |     compare with SIGMo result
-   v
-result.validation
+visualize.py
 ```
 
-The validation metadata includes:
+The visualization layer is intentionally separate from the core SIGMo pipeline. It is meant for inspection, debugging and examples, not for executing native SIGMo kernels.
+
+Current responsibilities include:
 
 ```text
-enabled
-method
-checked_pairs
-agreements
-disagreements
-skipped
-passed
+molecule drawing
+query-target pair drawing
+RDKit-based substructure highlighting
+SIGMo CSR graph to NetworkX conversion
+CSR graph debug drawing
 ```
 
-Validation is useful for correctness checks on small or controlled datasets.
+The main public helpers are:
 
-For very large datasets, complete validation is not recommended because it may be computationally expensive.
+```python
+from sigmo.visualize import draw_molecule, draw_match_pair, draw_graph, to_networkx
+```
+
+Important design note: match-pair highlighting is RDKit-based and used only for visualization. Current SIGMo results are pair-level results, meaning that SIGMo reports that query graph `i` matches data graph `j`, but it does not expose an atom-level mapping for drawing.
 
 ---
 
@@ -768,43 +771,6 @@ JSON summary intentionally avoids storing all matches and only contains metadata
 
 ---
 
-## Visualization Placeholder
-
-The package contains:
-
-```text
-visualize.py
-```
-
-At the moment, this file is empty.
-
-It is intentionally kept as a placeholder for future visualization features.
-
-Possible future responsibilities include:
-
-```text
-CSR graph to NetworkX conversion
-molecule drawing
-query-target visualization
-match visualization
-RDKit-based drawing
-substructure highlighting
-```
-
-No production code currently depends on `visualize.py`.
-
-Future possible API:
-
-```python
-sigmo.visualize.draw_graph(...)
-sigmo.visualize.draw_molecule(...)
-sigmo.visualize.draw_match(...)
-```
-
-The file exists to make the planned extension point explicit.
-
----
-
 ## Error and Warning Strategy
 
 The interface records warnings and errors inside result objects.
@@ -815,7 +781,6 @@ Warnings include situations such as:
 refinement disabled for stability
 force refinement enabled on small graphs
 large result detected
-RDKit validation skipped
 ```
 
 Errors are stored when a Python-level exception occurs during the pipeline.
@@ -878,8 +843,8 @@ The current architecture follows these principles:
 4. **Keep large outputs safe.**  
    Millions of matches should not be materialized in memory unnecessarily.
 
-5. **Keep validation optional.**  
-   RDKit validation is useful but should not be forced on large workloads.
+5. **Keep visualization separate.**  
+   Visualization belongs to `visualize.py` and remains independent from the core pipeline.
 
 6. **Keep future extensions isolated.**  
-   Visualization is reserved for `visualize.py`.
+   Additional export, visualization or analysis utilities should remain outside the native binding layer.
