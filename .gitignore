@@ -1,4 +1,4 @@
-build/
+# Native build artifacts
 bin/
 lib/
 *.o
@@ -6,22 +6,34 @@ lib/
 *.so
 *.pyd
 *.out
-.cache/
 
+# Python cache/build artifacts
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .pytest_cache/
+.cache/
 dist/
+build/
 build_python/
+*.egg-info/
 egg-info/
 
+# Editor/OS files
 .vscode/
 .idea/
 .DS_Store
 *.swp
 *.user
 
+# Generated example outputs
 examples/outputs/*
 !examples/outputs/.gitkeep
 
+# Local environment backups
+env_backups/
+
+# Local CMake artifacts
+external/CMakeCache.txt
+external/CMakeFiles/
+external/build/

@@ -119,6 +119,13 @@ namespace sigmo_python
         std::size_t allocated_bytes;
     };
 
+    /**
+     * @brief Statistiche e metadati risultanti dall'operazione di join dei candidati.
+     *
+     * Questa struttura aggrega le informazioni raccolte durante l'esecuzione della pipeline
+     * di join su GPU, includendo il numero di matc, il tempo di esecuzione,
+     * totale dei query graph e data graph identificati e il matches dict (libreria modificata di antonio)
+     */
     struct JoinCandidatesStats
     {
         std::size_t num_matches;

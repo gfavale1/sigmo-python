@@ -1,6 +1,12 @@
 import sigmo
 
 def main():
+    """
+    Run the simplest possible SIGMo search.
+
+    This example matches the query molecule "CC" against the target molecule
+    "CCC" using the high-level sigmo.match() API.
+    """
     result = sigmo.match(
         query="CC",
         target="CCC",
@@ -15,12 +21,12 @@ def main():
     print(result.explain())
 
     try:
-        df = result.to_dataframe()
+        dataframe = result.to_dataframe()
         print()
-        print(df)
+        print(dataframe)
     except ImportError:
         print()
-        print("Pandas non installato: salto la conversione in DataFrame.")
+        print("Pandas is not installed: skipping DataFrame conversion.")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import _core
 from .config import describe_queue, get_sycl_queue
@@ -10,10 +10,23 @@ from .result import KernelStep, MatchResult, build_match_result
 
 class PipelineContext:
     """
-    API avanzata: permette di eseguire la pipeline SIGMo step-by-step.
+    Stateful SIGMo kernel pipeline.
 
-    Serve a chi vuole controllare i singoli kernel senza manipolare direttamente
-    tutti gli oggetti C++ esposti dal binding.
+    PipelineContext owns the SYCL queue and the native SIGMo objects required
+    by the pipeline:
+
+        - Signature
+        - Candidates
+        - GMCR
+
+    The class exposes both a step-by-step API and a high-level run() method.
+    It is intended for users who need more control than the high-level
+    match()/search() functions, without manually managing all native objects.
+
+    Important:
+        The native objects are intentionally kept alive across all pipeline
+        steps. Recreating Signature/Candidates/GMCR between steps would break
+        the stateful execution model expected by the native SIGMo backend.
     """
 
     def __init__(
@@ -37,27 +50,38 @@ class PipelineContext:
         self.steps: List[KernelStep] = []
         self.warnings: List[str] = []
         self.errors: List[str] = []
+
         self.executed_iterations = 0
+        self.last_candidates_count: Optional[int] = None
         self.raw_join_result: Dict[str, Any] = {}
 
     @property
     def device_name(self) -> str:
+        """Return a human-readable name for the selected SYCL device."""
         return describe_queue(self.queue)
 
     @property
     def total_query_nodes(self) -> int:
-        return sum(int(g.get("num_nodes", 0)) for g in self.query_graphs)
+        """Return the total number of query nodes."""
+        return sum(int(graph.get("num_nodes", 0)) for graph in self.query_graphs)
 
     @property
     def total_data_nodes(self) -> int:
-        return sum(int(g.get("num_nodes", 0)) for g in self.data_graphs)
+        """Return the total number of data nodes."""
+        return sum(int(graph.get("num_nodes", 0)) for graph in self.data_graphs)
 
     def allocate(self) -> "PipelineContext":
-        """Alloca gli oggetti stateful della pipeline."""
+        """
+        Allocate native SIGMo objects.
+
+        This creates Signature, Candidates and GMCR objects and stores them
+        inside the context. These objects are reused by all subsequent steps.
+        """
         if not self.query_graphs:
-            raise ValueError("Nessun query graph fornito.")
+            raise ValueError("No query graphs provided.")
+
         if not self.data_graphs:
-            raise ValueError("Nessun data graph fornito.")
+            raise ValueError("No data graphs provided.")
 
         total_q = self.total_query_nodes + self.memory_padding
         total_d = self.total_data_nodes + self.memory_padding
@@ -65,22 +89,45 @@ class PipelineContext:
         self.signature = _core.Signature(self.queue, total_d, total_q)
         self.candidates = _core.Candidates(self.queue, total_q, total_d)
         self.gmcr = _core.GMCR(self.queue)
+
         self.queue.wait()
         return self
 
     def generate_signatures(self) -> "PipelineContext":
+        """
+        Generate initial query and data signatures.
+        """
         self._ensure_allocated()
+
         self._run_step(
             "generate_query_signatures",
-            lambda: _core.generate_csr_signatures(self.queue, self.query_graphs, self.signature, "query"),
+            lambda: _core.generate_csr_signatures(
+                self.queue,
+                self.query_graphs,
+                self.signature,
+                "query",
+            ),
         )
+
         self._run_step(
             "generate_data_signatures",
-            lambda: _core.generate_csr_signatures(self.queue, self.data_graphs, self.signature, "data"),
+            lambda: _core.generate_csr_signatures(
+                self.queue,
+                self.data_graphs,
+                self.signature,
+                "data",
+            ),
         )
+
         return self
 
     def filter_candidates(self) -> Dict[str, Any]:
+        """
+        Run the initial SIGMo candidate filtering step.
+
+        Returns:
+            Kernel statistics returned by the native binding.
+        """
         self._ensure_allocated()
 
         stats = self._run_step(
@@ -94,24 +141,40 @@ class PipelineContext:
             ),
         )
 
-        self.last_candidates_count = stats.get(
-            "candidates_count",
-            stats.get("total_candidates"),
-        )
-
+        self.last_candidates_count = _candidate_count_from_stats(stats)
         return stats
 
     def refine_once(self, iteration: int) -> Dict[str, Any]:
-        """Esegue una singola iterazione di raffinamento firme+candidati."""
+        """
+        Run one refinement iteration.
+
+        This method is mainly useful for debugging. The standard refine()
+        method records each kernel step separately.
+        """
         self._ensure_allocated()
+
         view_size = 1 + int(iteration)
 
         def _refine_all() -> Dict[str, Any]:
-            q_stats = _core.refine_csr_signatures(self.queue, self.query_graphs, self.signature, "query", view_size)
+            query_stats = _core.refine_csr_signatures(
+                self.queue,
+                self.query_graphs,
+                self.signature,
+                "query",
+                view_size,
+            )
             self.queue.wait()
-            d_stats = _core.refine_csr_signatures(self.queue, self.data_graphs, self.signature, "data", view_size)
+
+            data_stats = _core.refine_csr_signatures(
+                self.queue,
+                self.data_graphs,
+                self.signature,
+                "data",
+                view_size,
+            )
             self.queue.wait()
-            c_stats = _core.refine_candidates(
+
+            candidate_stats = _core.refine_candidates(
                 self.queue,
                 self.query_graphs,
                 self.data_graphs,
@@ -122,51 +185,21 @@ class PipelineContext:
 
             merged = {
                 "view_size": view_size,
-                "query_signature_stats": q_stats,
-                "data_signature_stats": d_stats,
-                "candidate_stats": c_stats,
+                "query_signature_stats": query_stats,
+                "data_signature_stats": data_stats,
+                "candidate_stats": candidate_stats,
             }
-            if isinstance(c_stats, dict):
-                for key in ("candidates_count", "total_candidates", "num_candidates", "candidate_count"):
-                    if key in c_stats:
-                        merged["candidates_count"] = c_stats[key]
-                        break
+
+            count = _candidate_count_from_stats(merged)
+            if count is not None:
+                merged["candidates_count"] = count
+                self.last_candidates_count = count
+
             return merged
 
         stats = self._run_step(f"refine_iteration_{iteration + 1}", _refine_all)
         self.executed_iterations += 1
         return stats
-
-    def _record_step_safe(self, name: str, duration_seconds: float, stats: dict):
-        """
-        Registra uno step kernel nella lista self.steps.
-
-        Questo helper è difensivo: prova prima a usare KernelStep della
-        nuova interfaccia. Se la struttura del dataclass cambia, non fa
-        fallire la pipeline, ma salva comunque un warning.
-        """
-        try:
-            from .result import KernelStep
-
-            try:
-                step = KernelStep(
-                    name=name,
-                    duration_seconds=duration_seconds,
-                    stats=stats or {},
-                )
-            except TypeError:
-                step = KernelStep(
-                    name=name,
-                    elapsed_seconds=duration_seconds,
-                    stats=stats or {},
-                )
-
-            self.steps.append(step)
-
-        except Exception as exc:
-            self.warnings.append(
-                f"Impossibile registrare lo step {name}: {exc}"
-            )
 
     def refine(
         self,
@@ -176,14 +209,23 @@ class PipelineContext:
         stop_on_fixed_point: bool = True,
     ) -> Dict[str, Any]:
         """
-        Esegue il refinement chiamando esplicitamente i tre kernel:
+        Run iterative signature and candidate refinement.
 
-        1. refine_csr_signatures(query)
-        2. refine_csr_signatures(data)
-        3. refine_candidates()
+        Each iteration executes the following native kernels:
 
-        Questa versione evita letture dirette potenzialmente instabili da Candidates,
-        usando soltanto le statistiche restituite da refine_candidates().
+            1. refine_csr_signatures(query)
+            2. refine_csr_signatures(data)
+            3. refine_candidates()
+
+        Args:
+            iterations: Maximum number of refinement iterations.
+            start_view_size: Initial signature view size.
+            stop_on_fixed_point: If True, stop when the candidate count no
+                longer changes.
+
+        Returns:
+            A summary dictionary containing executed_iterations,
+            last_candidates_count and last_stats.
         """
         self._ensure_allocated()
 
@@ -196,14 +238,14 @@ class PipelineContext:
                 "reason": "iterations <= 0",
             }
 
-        current_count = getattr(self, "last_candidates_count", None)
+        current_count = self.last_candidates_count
         last_stats: Dict[str, Any] = {}
         self.executed_iterations = 0
 
-        for i in range(max_iterations):
-            view_size = int(start_view_size) + i
+        for idx in range(max_iterations):
+            view_size = int(start_view_size) + idx
 
-            rq_stats = self._run_step(
+            self._run_step(
                 "refine_query_signatures",
                 lambda view_size=view_size: _core.refine_csr_signatures(
                     self.queue,
@@ -214,7 +256,7 @@ class PipelineContext:
                 ),
             )
 
-            rd_stats = self._run_step(
+            self._run_step(
                 "refine_data_signatures",
                 lambda view_size=view_size: _core.refine_csr_signatures(
                     self.queue,
@@ -225,7 +267,7 @@ class PipelineContext:
                 ),
             )
 
-            rc_stats = self._run_step(
+            candidate_stats = self._run_step(
                 "refine_candidates",
                 lambda: _core.refine_candidates(
                     self.queue,
@@ -236,9 +278,9 @@ class PipelineContext:
                 ),
             )
 
-            new_count = rc_stats.get("candidates_count")
-            last_stats = rc_stats
-            self.executed_iterations = i + 1
+            new_count = _candidate_count_from_stats(candidate_stats)
+            last_stats = candidate_stats
+            self.executed_iterations = idx + 1
 
             if new_count is not None:
                 self.last_candidates_count = new_count
@@ -250,8 +292,8 @@ class PipelineContext:
                 and new_count == current_count
             ):
                 self.warnings.append(
-                    "Refinement fermato al punto fisso dopo "
-                    f"{i + 1} iterazione/i: candidates_count={new_count}."
+                    "Refinement stopped at fixed point after "
+                    f"{idx + 1} iteration(s): candidates_count={new_count}."
                 )
                 break
 
@@ -259,12 +301,23 @@ class PipelineContext:
 
         return {
             "executed_iterations": self.executed_iterations,
-            "last_candidates_count": getattr(self, "last_candidates_count", None),
+            "last_candidates_count": self.last_candidates_count,
             "last_stats": last_stats,
         }
 
     def join(self, *, find_first: bool = True) -> Dict[str, Any]:
+        """
+        Run the final SIGMo join/isomorphism step.
+
+        Args:
+            find_first: If True, stop after the first match per pair whenever
+                the native backend supports this behavior.
+
+        Returns:
+            Raw join result returned by the native binding.
+        """
         self._ensure_allocated()
+
         self.raw_join_result = self._run_step(
             "join_candidates",
             lambda: _core.join_candidates(
@@ -276,6 +329,7 @@ class PipelineContext:
                 find_first,
             ),
         )
+
         return self.raw_join_result
 
     def run(
@@ -286,19 +340,50 @@ class PipelineContext:
         disable_refine_for_small_graphs: bool = True,
         min_refine_nodes: int = 6,
     ) -> MatchResult:
-        """Esegue l'intera pipeline e restituisce MatchResult."""
+        """
+        Execute the full SIGMo pipeline and return a MatchResult.
+
+        The executed pipeline is:
+
+            allocate()
+            generate_signatures()
+            filter_candidates()
+            refine()        optional
+            join()
+
+        Args:
+            iterations: Requested number of refinement iterations.
+            find_first: Whether the join step should stop at the first match.
+            disable_refine_for_small_graphs: If True, skip refinement when
+                very small graphs are present. This keeps the high-level API
+                stable on datasets containing micro-molecules.
+            min_refine_nodes: Minimum number of nodes required to enable
+                refinement when disable_refine_for_small_graphs=True.
+
+        Returns:
+            A MatchResult containing matches, kernel statistics, warnings and
+            errors.
+        """
         requested_iterations = int(iterations)
         effective_iterations = requested_iterations
+        self.executed_iterations = 0
 
         if disable_refine_for_small_graphs and effective_iterations > 0:
-            min_q = min((int(g.get("num_nodes", 0)) for g in self.query_graphs), default=0)
-            min_d = min((int(g.get("num_nodes", 0)) for g in self.data_graphs), default=0)
+            min_q = min(
+                (int(graph.get("num_nodes", 0)) for graph in self.query_graphs),
+                default=0,
+            )
+            min_d = min(
+                (int(graph.get("num_nodes", 0)) for graph in self.data_graphs),
+                default=0,
+            )
 
             if min_q < min_refine_nodes or min_d < min_refine_nodes:
                 effective_iterations = 0
                 self.warnings.append(
-                    "Refinement disabilitato: almeno un grafo ha meno di "
-                    f"{min_refine_nodes} nodi. La pipeline resta stabile ma meno selettiva."
+                    "Refinement disabled for stability: at least one graph has "
+                    f"fewer than {min_refine_nodes} nodes. The pipeline remains "
+                    "stable but less selective."
                 )
 
         try:
@@ -335,39 +420,57 @@ class PipelineContext:
             executed_iterations=self.executed_iterations,
         )
 
-    def current_candidates_count(self, *, default: Optional[int] = 0) -> Optional[int]:
-        if self.candidates is None:
-            return default
-        try:
-            return int(self.candidates.get_candidates_count(0))
-        except Exception:
-            return default
-
-    def _run_step(self, name: str, fn) -> Dict[str, Any]:
+    def _run_step(
+        self,
+        name: str,
+        fn: Callable[[], Any],
+    ) -> Dict[str, Any]:
         start = time.perf_counter()
         stats = fn()
         self.queue.wait()
         elapsed = time.perf_counter() - start
+
         if stats is None:
             stats = {}
+
         if not isinstance(stats, dict):
             stats = {"value": stats}
-        self.steps.append(KernelStep(name=name, elapsed_seconds=elapsed, stats=stats))
+
+        self.steps.append(
+            KernelStep(
+                name=name,
+                elapsed_seconds=elapsed,
+                stats=stats,
+            )
+        )
+
         return stats
 
     def _ensure_allocated(self) -> None:
         if self.signature is None or self.candidates is None or self.gmcr is None:
-            raise RuntimeError("Pipeline non allocata. Chiama allocate() prima di eseguire i kernel.")
+            raise RuntimeError(
+                "Pipeline is not allocated. Call allocate() before running kernels."
+            )
 
 
 def _candidate_count_from_stats(stats: Dict[str, Any]) -> Optional[int]:
-    for key in ("candidates_count", "total_candidates", "num_candidates", "candidate_count"):
+    """
+    Extract a candidate count from a native kernel statistics dictionary.
+    """
+    for key in (
+        "candidates_count",
+        "total_candidates",
+        "num_candidates",
+        "candidate_count",
+    ):
         if key in stats:
             try:
                 return int(stats[key])
             except Exception:
                 return None
+
     nested = stats.get("candidate_stats")
     if isinstance(nested, dict):
         return _candidate_count_from_stats(nested)
+
     return None

@@ -20,7 +20,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Load local development environment without printing extra info.
 SIGMO_QUIET=1 source "${SCRIPT_DIR}/dev_env.sh"
 
 BUILD_DIR="${BUILD_DIR:-${SIGMO_PYTHON_BUILD_DIR}}"
@@ -58,8 +57,8 @@ cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
 echo
 echo "Build completed successfully"
 echo
-echo "To use the local Python package, run:"
-echo "  source scripts/dev_env.sh"
+echo "Install the Python package in editable mode:"
+echo "  python -m pip install -e . --no-build-isolation --no-deps"
 echo
 echo "Then verify with:"
 echo "  python -c \"import sigmo; print('SIGMo import OK')\""

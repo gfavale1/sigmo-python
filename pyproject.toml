@@ -1,25 +1,27 @@
 [build-system]
 requires = [
     "setuptools>=68",
-    "wheel",
-    "cmake>=3.20",
-    "ninja",
-    "pybind11>=2.11",
-    "dpctl"
+    "wheel"
 ]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sigmo"
 version = "0.0.1"
-description = "Python bindings for SIGMo using dpctl and pybind11"
+description = "Python interface for the SIGMo subgraph isomorphism library"
 authors = [
     { name = "Giacomo Favale" }
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "dpctl",
+
+[project.optional-dependencies]
+dev = [
     "pytest"
+]
+viz = [
+    "networkx",
+    "matplotlib",
+    "pillow"
 ]
 
 [tool.setuptools]
@@ -30,5 +32,5 @@ where = ["python"]
 
 [tool.pytest.ini_options]
 filterwarnings = [
-    "ignore:.*dpctl\\.tensor is deprecated.*:DeprecationWarning",
+    "ignore:.*dpctl\\.tensor is deprecated.*:DeprecationWarning"
 ]

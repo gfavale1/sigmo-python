@@ -1,5 +1,18 @@
 import sigmo
-from conftest import assert_match_result
+
+def assert_match_result(result):
+    """
+    Assert that an object behaves like a MatchResult.
+    """
+    assert hasattr(result, "total_matches")
+    assert hasattr(result, "matches")
+    assert hasattr(result, "steps")
+    assert hasattr(result, "warnings")
+    assert hasattr(result, "summary")
+    assert hasattr(result, "explain")
+    assert isinstance(result.summary(), str)
+    assert isinstance(result.explain(), str)
+    return result
 
 
 def test_match_high_level_positive():
@@ -99,5 +112,5 @@ def test_result_export_methods(tmp_path):
 
     assert csv_path.exists()
     assert json_path.exists()
-    assert csv_path.read_text().strip() != ""
-    assert json_path.read_text().strip() != ""
+    assert csv_path.read_text(encoding="utf-8").strip() != ""
+    assert json_path.read_text(encoding="utf-8").strip() != ""

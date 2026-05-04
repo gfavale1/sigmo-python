@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .graph import load_molecules, smarts_to_csr_from_string
+from .graph import load_molecules
 from .pipeline import PipelineContext
 from .result import MatchResult
-from .validation import validate_result_with_rdkit
 
 __all__ = [
     "match",
@@ -25,23 +24,53 @@ def match(
     find_first: bool = True,
     device: str = "auto",
     queue: Any = None,
-    validate_with_rdkit: bool = False,
 ) -> MatchResult:
     """
-    Entry point piu' semplice: confronta una query con un target.
+    Match a single query molecule/pattern against a single target molecule.
 
-    Esempio:
-        result = sigmo.match("c1ccccc1", "CCOC(=O)c1ccccc1")
-        print(result.summary())
+    Args:
+        query: Query molecule or pattern.
+        target: Target molecule.
+        input_format: One of "auto", "smarts", or "smiles".
+        iterations: Number of requested refinement iterations.
+        find_first: If True, return only the first match for each query-target pair
+            when supported by the native backend.
+        device: SYCL device selector, for example "auto" or "cuda:gpu".
+        queue: Optional pre-created dpctl.SyclQueue.
+
+    Returns:
+        A MatchResult object containing matches, kernel timings, warnings and
+        execution metadata.
     """
     q_graphs = load_molecules([query], input_format=input_format)
     d_graphs = load_molecules([target], input_format=input_format)
-    return run_isomorphism(q_graphs, d_graphs, queue=queue, device=device, find_first=find_first, iterations=iterations, validate_with_rdkit=validate_with_rdkit)
+
+    return run_isomorphism(
+        q_graphs,
+        d_graphs,
+        queue=queue,
+        device=device,
+        find_first=find_first,
+        iterations=iterations,
+    )
 
 
-def match_smarts(query_smarts: str, target_smarts: str, **kwargs: Any) -> MatchResult:
-    """Alias esplicito per utenti che lavorano con SMARTS."""
-    return match(query_smarts, target_smarts, input_format="smarts", **kwargs)
+def match_smarts(
+    query_smarts: str,
+    target_smarts: str,
+    **kwargs: Any,
+) -> MatchResult:
+    """
+    Match a SMARTS query against a SMARTS target.
+
+    This is a convenience alias for match(..., input_format="smarts").
+    """
+    return match(
+        query_smarts,
+        target_smarts,
+        input_format="smarts",
+        **kwargs,
+    )
 
 
 def search(
@@ -54,49 +83,81 @@ def search(
     device: str = "auto",
     queue: Any = None,
     strict: bool = False,
-    validate_with_rdkit: bool = False,
 ) -> MatchResult:
     """
-    Entry point batch: accetta file, liste, stringhe, RDKit Mol o grafi CSR.
+    Run batch subgraph isomorphism over multiple query and data graphs.
+
+    Args:
+        queries: File path, chemical string, list of strings, RDKit Mol objects,
+            or SIGMo-compatible CSR graphs.
+        database: File path, chemical string, list of strings, RDKit Mol objects,
+            or SIGMo-compatible CSR graphs.
+        input_format: One of "auto", "smarts", or "smiles".
+        iterations: Number of requested refinement iterations.
+        find_first: If True, return only the first match for each pair when
+            supported by the native backend.
+        device: SYCL device selector.
+        queue: Optional pre-created dpctl.SyclQueue.
+        strict: If True, fail on the first invalid input item.
+
+    Returns:
+        A MatchResult object.
     """
-    q_graphs = load_molecules(queries, input_format=input_format, strict=strict)
-    d_graphs = load_molecules(database, input_format=input_format, strict=strict)
-    return run_isomorphism(q_graphs, d_graphs, queue=queue, device=device, find_first=find_first, iterations=iterations, validate_with_rdkit=validate_with_rdkit)
+    q_graphs = load_molecules(
+        queries,
+        input_format=input_format,
+        strict=strict,
+    )
+    d_graphs = load_molecules(
+        database,
+        input_format=input_format,
+        strict=strict,
+    )
+
+    return run_isomorphism(
+        q_graphs,
+        d_graphs,
+        queue=queue,
+        device=device,
+        find_first=find_first,
+        iterations=iterations,
+    )
 
 
 def run_isomorphism(
-    q_graphs,
-    d_graphs,
+    q_graphs: List[Dict[str, Any]],
+    d_graphs: List[Dict[str, Any]],
     *,
-    queue=None,
-    device="auto",
-    find_first=True,
-    iterations=1,
-    validate_with_rdkit=False,
-):
-    ctx = PipelineContext(q_graphs, d_graphs, queue=queue, device=device)
+    queue: Any = None,
+    device: str = "auto",
+    find_first: bool = True,
+    iterations: int = 1,
+) -> MatchResult:
+    """
+    Execute SIGMo on already-converted CSR query and data graphs.
 
-    result = ctx.run(
+    Use this function when you already have CSR graphs and do not need the
+    loading/parsing convenience provided by match() or search().
+    """
+    context = PipelineContext(
+        q_graphs,
+        d_graphs,
+        queue=queue,
+        device=device,
+    )
+
+    return context.run(
         iterations=iterations,
         find_first=find_first,
     )
 
-    if validate_with_rdkit:
-        result = validate_result_with_rdkit(
-            result,
-            q_graphs,
-            d_graphs,
-        )
-
-    return result
-
 
 class SIGMoMatcher:
     """
-    Interfaccia object-oriented ad alta usabilita'.
+    Object-oriented high-level matcher.
 
-    Consigliata quando si vuole riusare la stessa configurazione device/iterazioni
-    su piu' esperimenti.
+    SIGMoMatcher is useful when the same device, input format and execution
+    configuration should be reused across multiple experiments.
     """
 
     def __init__(
@@ -108,26 +169,40 @@ class SIGMoMatcher:
         find_first: bool = True,
         input_format: str = "auto",
         strict: bool = False,
-        validate_with_rdkit: bool = False,
     ) -> None:
         self.device = device
         self.queue = queue
         self.iterations = int(iterations)
         self.find_first = bool(find_first)
         self.input_format = input_format
-        self.strict = strict
-        self.validate_with_rdkit = bool(validate_with_rdkit)
+        self.strict = bool(strict)
+
         self.query_graphs: List[Dict[str, Any]] = []
         self.data_graphs: List[Dict[str, Any]] = []
+
         self.last_context: Optional[PipelineContext] = None
         self.last_result: Optional[MatchResult] = None
 
     def set_queries(self, queries: Any) -> "SIGMoMatcher":
-        self.query_graphs = load_molecules(queries, input_format=self.input_format, strict=self.strict)
+        """
+        Load and store query graphs.
+        """
+        self.query_graphs = load_molecules(
+            queries,
+            input_format=self.input_format,
+            strict=self.strict,
+        )
         return self
 
     def set_database(self, database: Any) -> "SIGMoMatcher":
-        self.data_graphs = load_molecules(database, input_format=self.input_format, strict=self.strict)
+        """
+        Load and store data graphs.
+        """
+        self.data_graphs = load_molecules(
+            database,
+            input_format=self.input_format,
+            strict=self.strict,
+        )
         return self
 
     def run(
@@ -138,32 +213,54 @@ class SIGMoMatcher:
         iterations: Optional[int] = None,
         find_first: Optional[bool] = None,
     ) -> MatchResult:
+        """
+        Run SIGMo using stored or newly provided query/data inputs.
+        """
         if queries is not None:
             self.set_queries(queries)
+
         if database is not None:
             self.set_database(database)
 
         if not self.query_graphs:
-            raise ValueError("Nessuna query caricata. Usa set_queries() oppure passa queries a run().")
-        if not self.data_graphs:
-            raise ValueError("Nessun database caricato. Usa set_database() oppure passa database a run().")
+            raise ValueError(
+                "No query graphs loaded. Use set_queries() or pass queries to run()."
+            )
 
-        self.last_context = PipelineContext(self.query_graphs, self.data_graphs, queue=self.queue, device=self.device)
+        if not self.data_graphs:
+            raise ValueError(
+                "No data graphs loaded. Use set_database() or pass database to run()."
+            )
+
+        self.last_context = PipelineContext(
+            self.query_graphs,
+            self.data_graphs,
+            queue=self.queue,
+            device=self.device,
+        )
+
         self.last_result = self.last_context.run(
             iterations=self.iterations if iterations is None else int(iterations),
             find_first=self.find_first if find_first is None else bool(find_first),
-            )
-        if getattr(self, "validate_with_rdkit", False):
-            self.last_result = validate_result_with_rdkit(
-                self.last_result,
-                self.query_graphs,
-                self.data_graphs,
-            )
+        )
+
         return self.last_result
 
-    # Metodi avanzati: espongono i singoli step in modo controllato.
     def create_context(self) -> PipelineContext:
+        """
+        Create a PipelineContext from the currently loaded query/data graphs.
+
+        This exposes the step-by-step pipeline API while preserving the matcher
+        configuration.
+        """
         if not self.query_graphs or not self.data_graphs:
-            raise ValueError("Carica prima query e database.")
-        self.last_context = PipelineContext(self.query_graphs, self.data_graphs, queue=self.queue, device=self.device)
+            raise ValueError("Load query and database graphs before creating a context.")
+
+        self.last_context = PipelineContext(
+            self.query_graphs,
+            self.data_graphs,
+            queue=self.queue,
+            device=self.device,
+        )
+
         return self.last_context
