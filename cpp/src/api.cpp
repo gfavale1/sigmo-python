@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <iostream>
 
 #include "types.hpp"
 #include "device.hpp"
@@ -832,11 +833,20 @@ namespace sigmo_python
 
     JoinCandidatesStats NativePipeline::join_candidates(bool find_first)
     {
+        auto total_start = std::chrono::high_resolution_clock::now();
+
         JoinCandidatesStats stats{};
         std::size_t num_matches = 0;
         double elapsed_ms = 0.0;
 
-        constexpr std::size_t max_capacity = 50000000;
+        /*
+         * We do not materialize huge match sets into Python.
+         * The total number of matches is still computed exactly through d_num_matches.
+         */
+        constexpr std::size_t MATCH_MATERIALIZATION_LIMIT = 100000;
+        constexpr std::size_t max_capacity = MATCH_MATERIALIZATION_LIMIT;
+
+        auto alloc_start = std::chrono::high_resolution_clock::now();
 
         sigmo::types::MatchPair *d_buffer =
             sycl::malloc_device<sigmo::types::MatchPair>(max_capacity, queue_);
@@ -845,7 +855,9 @@ namespace sigmo_python
             sycl::malloc_device<std::size_t>(1, queue_);
 
         std::size_t *d_num_matches =
-            sycl::malloc_shared<std::size_t>(1, queue_);
+            sycl::malloc_device<std::size_t>(1, queue_);
+
+        auto alloc_end = std::chrono::high_resolution_clock::now();
 
         if (!d_buffer || !d_count || !d_num_matches)
         {
@@ -863,21 +875,25 @@ namespace sigmo_python
         try
         {
             queue_.fill(d_count, std::size_t(0), 1).wait();
-            d_num_matches[0] = 0;
+            queue_.fill(d_num_matches, std::size_t(0), 1).wait();
 
             sigmo::types::MatchResultsDevice out_results{
                 d_buffer,
                 d_count,
                 max_capacity};
 
+            auto gmcr_start = std::chrono::high_resolution_clock::now();
+
             gmcr_->generateGMCR(dev_query_, dev_data_, *candidates_);
             queue_.wait_and_throw();
+
+            auto gmcr_end = std::chrono::high_resolution_clock::now();
 
             auto gmcr_dev = gmcr_->getGMCRDevice();
 
             if (gmcr_dev.total_query_indices > 0)
             {
-                auto start = std::chrono::high_resolution_clock::now();
+                auto kernel_start = std::chrono::high_resolution_clock::now();
 
                 sigmo::isomorphism::join::joinCandidates(
                     queue_,
@@ -891,44 +907,77 @@ namespace sigmo_python
 
                 queue_.wait_and_throw();
 
-                auto end = std::chrono::high_resolution_clock::now();
+                auto kernel_end = std::chrono::high_resolution_clock::now();
 
                 elapsed_ms =
-                    std::chrono::duration<double, std::milli>(end - start).count();
+                    std::chrono::duration<double, std::milli>(
+                        kernel_end - kernel_start)
+                        .count();
             }
 
-            num_matches = d_num_matches[0];
+            auto count_copy_start = std::chrono::high_resolution_clock::now();
+
+            queue_.memcpy(&num_matches, d_num_matches, sizeof(std::size_t)).wait();
+
+            auto count_copy_end = std::chrono::high_resolution_clock::now();
 
             stats.num_matches = num_matches;
             stats.execution_time = elapsed_ms;
             stats.total_query_graph = static_cast<std::uint32_t>(dev_query_.num_graphs);
             stats.total_data_graph = static_cast<std::uint32_t>(dev_data_.num_graphs);
 
-            std::size_t actual_match_count = 0;
-            queue_.memcpy(&actual_match_count, d_count, sizeof(std::size_t)).wait();
+            auto materialization_start = std::chrono::high_resolution_clock::now();
 
-            const std::size_t safe_match_count =
-                std::min(actual_match_count, max_capacity);
-
-            if (safe_match_count > 0)
+            if (num_matches <= MATCH_MATERIALIZATION_LIMIT)
             {
-                std::vector<sigmo::types::MatchPair> h_matches(safe_match_count);
+                std::size_t actual_match_count = 0;
+                queue_.memcpy(&actual_match_count, d_count, sizeof(std::size_t)).wait();
 
-                queue_.memcpy(
-                          h_matches.data(),
-                          d_buffer,
-                          safe_match_count * sizeof(sigmo::types::MatchPair))
-                    .wait();
+                const std::size_t safe_match_count =
+                    std::min(actual_match_count, max_capacity);
 
-                for (const auto &match : h_matches)
+                if (safe_match_count > 0)
                 {
-                    stats.matches_dict[match.query_id].push_back(match.data_id);
+                    std::vector<sigmo::types::MatchPair> h_matches(safe_match_count);
+
+                    queue_.memcpy(
+                              h_matches.data(),
+                              d_buffer,
+                              safe_match_count * sizeof(sigmo::types::MatchPair))
+                        .wait();
+
+                    for (const auto &match : h_matches)
+                    {
+                        stats.matches_dict[match.query_id].push_back(match.data_id);
+                    }
                 }
             }
+
+            auto materialization_end = std::chrono::high_resolution_clock::now();
+
+            auto free_start = std::chrono::high_resolution_clock::now();
 
             sycl::free(d_buffer, queue_);
             sycl::free(d_count, queue_);
             sycl::free(d_num_matches, queue_);
+
+            auto free_end = std::chrono::high_resolution_clock::now();
+            auto total_end = std::chrono::high_resolution_clock::now();
+
+            auto ms = [](auto start, auto end)
+            {
+                return std::chrono::duration<double, std::milli>(end - start).count();
+            };
+
+            //std::cerr << "[JOIN DEBUG] "
+            //          << "alloc_ms=" << ms(alloc_start, alloc_end)
+            //         << " gmcr_ms=" << ms(gmcr_start, gmcr_end)
+            //          << " kernel_ms=" << elapsed_ms
+            //          << " count_copy_ms=" << ms(count_copy_start, count_copy_end)
+            //         << " materialization_ms=" << ms(materialization_start, materialization_end)
+            //          << " free_ms=" << ms(free_start, free_end)
+            //          << " total_cpp_ms=" << ms(total_start, total_end)
+            //          << std::endl;
 
             return stats;
         }

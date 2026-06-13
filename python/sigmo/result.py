@@ -283,6 +283,12 @@ def build_match_result(
     matches = _extract_matches(raw_result, q_graphs, d_graphs)
     total_matches = int(raw_result.get("num_matches", len(matches)))
 
+    if total_matches > len(matches):
+        warnings.append(
+            "Large result detected: the total match count is preserved, "
+            "but individual match pairs were not fully materialized in memory."
+        )
+
     return MatchResult(
         total_matches=total_matches,
         matches=matches,
