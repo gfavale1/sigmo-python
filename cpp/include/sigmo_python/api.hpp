@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <memory>
 #include <sycl/sycl.hpp>
 
 #include "sigmo_python/types.hpp"
@@ -133,29 +134,75 @@ namespace sigmo_python
     /**
      * @brief Esegue la fase di join per identificare gli isomorfismi reali tra i grafi.
      *
-     * * Il wrapper gestisce il caricamento temporaneo dei grafi host-side sulla GPU 
-     * (DeviceBatchedCSRGraph) e coordina la generazione della struttura GMCR 
+     * * Il wrapper gestisce il caricamento temporaneo dei grafi host-side sulla GPU
+     * (DeviceBatchedCSRGraph) e coordina la generazione della struttura GMCR
      * (Global Matching Candidates Record) necessaria per l'esplorazione dello spazio degli stati.
-     * 
+     *
      * @param queue Queue SYCL usata per il caricamento dei dati e l'esecuzione dei kernel.
      * @param query_graph Batch di grafi query nel formato HostCSRGraphInput provenienti dal binding.
      * @param data_graph Batch di grafi target (database) nel formato HostCSRGraphInput.
      * @param candidates Oggetto SIGMo dei candidati, aggiornato dalle fasi precedenti (Filter/Refine).
      * @param gmcr Oggetto per la gestione del mapping dei candidati, fondamentale per la fase di join.
      * @param num_matches Riferimento (output) in cui viene memorizzato il numero totale di isomorfismi trovati.
-     * @param find_first Se true, il kernel si interrompe al primo match trovato per ogni coppia (migliora le performance 
+     * @param find_first Se true, il kernel si interrompe al primo match trovato per ogni coppia (migliora le performance
      * se interessa solo la presenza del sottografo e non tutte le occorrenze).
-     * 
+     *
      * * @return Statistiche aggregate sull'esecuzione (tempi di calcolo e conteggio grafi processati).
      */
 
-    JoinCandidatesStats join_candidates ( 
+    JoinCandidatesStats join_candidates(
         sycl::queue &queue,
         const std::vector<HostCSRGraphInput> &query_graph,
         const std::vector<HostCSRGraphInput> &data_graph,
         sigmo::candidates::Candidates &candidates,
         sigmo::isomorphism::mapping::GMCR &gmcr,
         std::size_t &num_matches,
-        bool find_first = true
-    );
+        bool find_first = true);
+
+    class NativePipeline
+    {
+    public:
+        NativePipeline(
+            sycl::queue queue,
+            const std::vector<HostCSRGraphInput> &query_graphs,
+            const std::vector<HostCSRGraphInput> &data_graphs,
+            std::size_t memory_padding = 16);
+
+        ~NativePipeline();
+
+        NativePipeline(const NativePipeline &) = delete;
+        NativePipeline &operator=(const NativePipeline &) = delete;
+
+        NativePipeline(NativePipeline &&) = delete;
+        NativePipeline &operator=(NativePipeline &&) = delete;
+
+        GraphBatchStats generate_query_signatures();
+        GraphBatchStats generate_data_signatures();
+
+        GraphBatchStats refine_query_signatures(std::size_t view_size);
+        GraphBatchStats refine_data_signatures(std::size_t view_size);
+
+        FilterCandidatesStats filter_candidates();
+        RefineCandidatesStats refine_candidates();
+
+        JoinCandidatesStats join_candidates(bool find_first = true);
+
+        std::size_t total_query_nodes() const;
+        std::size_t total_data_nodes() const;
+        std::size_t total_query_graphs() const;
+        std::size_t total_data_graphs() const;
+
+    private:
+        sycl::queue queue_;
+
+        sigmo::DeviceBatchedCSRGraph dev_query_{};
+        sigmo::DeviceBatchedCSRGraph dev_data_{};
+
+        std::unique_ptr<sigmo::signature::Signature<>> signatures_;
+        std::unique_ptr<sigmo::candidates::Candidates> candidates_;
+        std::unique_ptr<sigmo::isomorphism::mapping::GMCR> gmcr_;
+
+        std::size_t memory_padding_{16};
+        bool device_graphs_valid_{false};
+    };
 } // namespace sigmo_python

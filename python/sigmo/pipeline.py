@@ -46,6 +46,7 @@ class PipelineContext:
         self.signature = None
         self.candidates = None
         self.gmcr = None
+        self.native = None
 
         self.steps: List[KernelStep] = []
         self.warnings: List[str] = []
@@ -71,11 +72,10 @@ class PipelineContext:
         return sum(int(graph.get("num_nodes", 0)) for graph in self.data_graphs)
 
     def allocate(self) -> "PipelineContext":
-        """
-        Allocate native SIGMo objects.
+        """Allocate the native stateful SIGMo pipeline.
 
-        This creates Signature, Candidates and GMCR objects and stores them
-        inside the context. These objects are reused by all subsequent steps.
+        The optimized native pipeline keeps query/data DeviceBatchedCSRGraph,
+        Signature, Candidates and GMCR alive across all steps.
         """
         if not self.query_graphs:
             raise ValueError("No query graphs provided.")
@@ -83,104 +83,64 @@ class PipelineContext:
         if not self.data_graphs:
             raise ValueError("No data graphs provided.")
 
-        total_q = self.total_query_nodes + self.memory_padding
-        total_d = self.total_data_nodes + self.memory_padding
+        self.native = _core.NativePipeline(
+            self.queue,
+            self.query_graphs,
+            self.data_graphs,
+            self.memory_padding,
+        )
 
-        self.signature = _core.Signature(self.queue, total_d, total_q)
-        self.candidates = _core.Candidates(self.queue, total_q, total_d)
-        self.gmcr = _core.GMCR(self.queue)
+        # These attributes are kept only for backward-compatible checks.
+        self.signature = True
+        self.candidates = True
+        self.gmcr = True
 
         self.queue.wait()
         return self
 
     def generate_signatures(self) -> "PipelineContext":
-        """
-        Generate initial query and data signatures.
-        """
+        """Generate initial query and data signatures."""
         self._ensure_allocated()
 
         self._run_step(
             "generate_query_signatures",
-            lambda: _core.generate_csr_signatures(
-                self.queue,
-                self.query_graphs,
-                self.signature,
-                "query",
-            ),
+            lambda: self.native.generate_query_signatures(),
         )
 
         self._run_step(
             "generate_data_signatures",
-            lambda: _core.generate_csr_signatures(
-                self.queue,
-                self.data_graphs,
-                self.signature,
-                "data",
-            ),
+            lambda: self.native.generate_data_signatures(),
         )
 
         return self
 
     def filter_candidates(self) -> Dict[str, Any]:
-        """
-        Run the initial SIGMo candidate filtering step.
-
-        Returns:
-            Kernel statistics returned by the native binding.
-        """
+        """Run the initial SIGMo candidate filtering step."""
         self._ensure_allocated()
 
         stats = self._run_step(
             "filter_candidates",
-            lambda: _core.filter_candidates(
-                self.queue,
-                self.query_graphs,
-                self.data_graphs,
-                self.signature,
-                self.candidates,
-            ),
+            lambda: self.native.filter_candidates(),
         )
 
         self.last_candidates_count = _candidate_count_from_stats(stats)
+
         return stats
 
     def refine_once(self, iteration: int) -> Dict[str, Any]:
-        """
-        Run one refinement iteration.
-
-        This method is mainly useful for debugging. The standard refine()
-        method records each kernel step separately.
-        """
+        """Run one refinement iteration."""
         self._ensure_allocated()
 
         view_size = 1 + int(iteration)
 
         def _refine_all() -> Dict[str, Any]:
-            query_stats = _core.refine_csr_signatures(
-                self.queue,
-                self.query_graphs,
-                self.signature,
-                "query",
-                view_size,
-            )
+            query_stats = self.native.refine_query_signatures(view_size)
             self.queue.wait()
 
-            data_stats = _core.refine_csr_signatures(
-                self.queue,
-                self.data_graphs,
-                self.signature,
-                "data",
-                view_size,
-            )
+            data_stats = self.native.refine_data_signatures(view_size)
             self.queue.wait()
 
-            candidate_stats = _core.refine_candidates(
-                self.queue,
-                self.query_graphs,
-                self.data_graphs,
-                self.signature,
-                self.candidates,
-            )
+            candidate_stats = self.native.refine_candidates()
             self.queue.wait()
 
             merged = {
@@ -191,6 +151,7 @@ class PipelineContext:
             }
 
             count = _candidate_count_from_stats(merged)
+
             if count is not None:
                 merged["candidates_count"] = count
                 self.last_candidates_count = count
@@ -199,6 +160,7 @@ class PipelineContext:
 
         stats = self._run_step(f"refine_iteration_{iteration + 1}", _refine_all)
         self.executed_iterations += 1
+
         return stats
 
     def refine(
@@ -247,35 +209,17 @@ class PipelineContext:
 
             self._run_step(
                 "refine_query_signatures",
-                lambda view_size=view_size: _core.refine_csr_signatures(
-                    self.queue,
-                    self.query_graphs,
-                    self.signature,
-                    "query",
-                    view_size,
-                ),
+                lambda view_size=view_size: self.native.refine_query_signatures(view_size),
             )
 
             self._run_step(
                 "refine_data_signatures",
-                lambda view_size=view_size: _core.refine_csr_signatures(
-                    self.queue,
-                    self.data_graphs,
-                    self.signature,
-                    "data",
-                    view_size,
-                ),
+                lambda view_size=view_size: self.native.refine_data_signatures(view_size),
             )
 
             candidate_stats = self._run_step(
                 "refine_candidates",
-                lambda: _core.refine_candidates(
-                    self.queue,
-                    self.query_graphs,
-                    self.data_graphs,
-                    self.signature,
-                    self.candidates,
-                ),
+                lambda: self.native.refine_candidates(),
             )
 
             new_count = _candidate_count_from_stats(candidate_stats)
@@ -306,28 +250,12 @@ class PipelineContext:
         }
 
     def join(self, *, find_first: bool = True) -> Dict[str, Any]:
-        """
-        Run the final SIGMo join/isomorphism step.
-
-        Args:
-            find_first: If True, stop after the first match per pair whenever
-                the native backend supports this behavior.
-
-        Returns:
-            Raw join result returned by the native binding.
-        """
+        """Run the final SIGMo join/isomorphism step."""
         self._ensure_allocated()
 
         self.raw_join_result = self._run_step(
             "join_candidates",
-            lambda: _core.join_candidates(
-                self.queue,
-                self.query_graphs,
-                self.data_graphs,
-                self.candidates,
-                self.gmcr,
-                find_first,
-            ),
+            lambda: self.native.join_candidates(find_first),
         )
 
         return self.raw_join_result
@@ -447,7 +375,7 @@ class PipelineContext:
         return stats
 
     def _ensure_allocated(self) -> None:
-        if self.signature is None or self.candidates is None or self.gmcr is None:
+        if self.native is None:
             raise RuntimeError(
                 "Pipeline is not allocated. Call allocate() before running kernels."
             )

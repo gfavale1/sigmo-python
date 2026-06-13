@@ -134,6 +134,90 @@ namespace sigmo_python
         return total;
     }
 
+    std::size_t count_candidates_on_device(
+        sycl::queue &q,
+        sigmo::candidates::Candidates &candidates)
+    {
+        auto cand_dev = candidates.getCandidatesDevice();
+
+        const std::size_t total_words =
+            cand_dev.source_nodes * cand_dev.single_node_size;
+
+        if (total_words == 0)
+        {
+            return 0;
+        }
+
+        constexpr std::size_t WG_SIZE = 256;
+
+        const std::size_t num_groups =
+            (total_words + WG_SIZE - 1) / WG_SIZE;
+
+        std::uint64_t *partials =
+            sycl::malloc_shared<std::uint64_t>(num_groups, q);
+
+        if (!partials)
+        {
+            throw OutOfDeviceMemoryError(
+                "Unable to allocate partial counter buffer for device-side candidate counting");
+        }
+
+        q.submit([&](sycl::handler &cgh)
+                 {
+        sycl::local_accessor<std::uint64_t, 1> local_counts(
+            sycl::range<1>(WG_SIZE),
+            cgh
+        );
+
+        cgh.parallel_for(
+            sycl::nd_range<1>(
+                sycl::range<1>(num_groups * WG_SIZE),
+                sycl::range<1>(WG_SIZE)
+            ),
+            [=](sycl::nd_item<1> item) {
+                const std::size_t gid = item.get_global_linear_id();
+                const std::size_t lid = item.get_local_linear_id();
+                const std::size_t group_id = item.get_group_linear_id();
+
+                std::uint64_t value = 0;
+
+                if (gid < total_words) {
+                    auto word = cand_dev.candidates[gid];
+                    value = static_cast<std::uint64_t>(sycl::popcount(word));
+                }
+
+                local_counts[lid] = value;
+                sycl::group_barrier(item.get_group());
+
+                for (std::size_t stride = WG_SIZE / 2; stride > 0; stride /= 2) {
+                    if (lid < stride) {
+                        local_counts[lid] += local_counts[lid + stride];
+                    }
+
+                    sycl::group_barrier(item.get_group());
+                }
+
+                if (lid == 0) {
+                    partials[group_id] = local_counts[0];
+                }
+            }
+        ); })
+            .wait();
+
+        q.wait_and_throw();
+
+        std::size_t total = 0;
+
+        for (std::size_t i = 0; i < num_groups; ++i)
+        {
+            total += static_cast<std::size_t>(partials[i]);
+        }
+
+        sycl::free(partials, q);
+
+        return total;
+    }
+
     // Wrapper del path generateCSRSignatures.
     //
     // L'idea qui è:
@@ -383,7 +467,7 @@ namespace sigmo_python
             uint64_t pre_refine = count_candidates_on_host(q, candidates);
 
             // Esecuzione del kernel
-            auto event = sigmo::isomorphism::filter::refineCandidates<sigmo::CandidatesDomain::Query>(
+            auto event = sigmo::isomorphism::filter::refineCandidates(
                 q, dev_q, dev_d, signatures, candidates);
             event.wait();
             q.wait_and_throw();
@@ -480,11 +564,11 @@ namespace sigmo_python
 
             if (dev_d.graph_offsets)
                 sigmo::destroyDeviceCSRGraph(dev_d, q);
-            
-            if(d_buffer)
+
+            if (d_buffer)
                 sycl::free(d_buffer, q);
-            
-            if(d_count)
+
+            if (d_count)
                 sycl::free(d_count, q);
             throw;
         }
@@ -517,6 +601,364 @@ namespace sigmo_python
         sigmo::destroyDeviceCSRGraph(dev_d, q);
 
         return stats;
+    }
+
+    NativePipeline::NativePipeline(
+        sycl::queue queue,
+        const std::vector<HostCSRGraphInput> &query_graphs,
+        const std::vector<HostCSRGraphInput> &data_graphs,
+        std::size_t memory_padding)
+        : queue_(queue),
+          memory_padding_(memory_padding)
+    {
+        if (query_graphs.empty() || data_graphs.empty())
+        {
+            throw InvalidGraphInputError(
+                "NativePipeline requires non-empty query and data graph batches");
+        }
+
+        auto csr_query = to_sigmo_csr_graphs(query_graphs);
+        auto csr_data = to_sigmo_csr_graphs(data_graphs);
+
+        try
+        {
+            dev_query_ = sigmo::createDeviceCSRGraph(queue_, csr_query);
+            dev_data_ = sigmo::createDeviceCSRGraph(queue_, csr_data);
+            queue_.wait_and_throw();
+            device_graphs_valid_ = true;
+        }
+        catch (const std::exception &e)
+        {
+            throw OutOfDeviceMemoryError(
+                std::string("GPU graph upload failed in NativePipeline: ") + e.what());
+        }
+
+        const std::size_t total_q =
+            static_cast<std::size_t>(dev_query_.total_nodes) + memory_padding_;
+
+        const std::size_t total_d =
+            static_cast<std::size_t>(dev_data_.total_nodes) + memory_padding_;
+
+        try
+        {
+            signatures_ = std::make_unique<sigmo::signature::Signature<>>(
+                queue_,
+                total_d,
+                total_q);
+
+            candidates_ = std::make_unique<sigmo::candidates::Candidates>(
+                queue_,
+                total_q,
+                total_d);
+
+            gmcr_ = std::make_unique<sigmo::isomorphism::mapping::GMCR>(
+                queue_);
+        }
+        catch (const std::exception &e)
+        {
+            if (device_graphs_valid_)
+            {
+                sigmo::destroyDeviceCSRGraph(dev_query_, queue_);
+                sigmo::destroyDeviceCSRGraph(dev_data_, queue_);
+                device_graphs_valid_ = false;
+            }
+
+            throw OutOfDeviceMemoryError(
+                std::string("NativePipeline native object allocation failed: ") + e.what());
+        }
+    }
+
+    NativePipeline::~NativePipeline()
+    {
+        try
+        {
+            if (device_graphs_valid_)
+            {
+                sigmo::destroyDeviceCSRGraph(dev_query_, queue_);
+                sigmo::destroyDeviceCSRGraph(dev_data_, queue_);
+                queue_.wait();
+                device_graphs_valid_ = false;
+            }
+        }
+        catch (...)
+        {
+            // Destructor must not throw.
+        }
+    }
+
+    GraphBatchStats NativePipeline::generate_query_signatures()
+    {
+        try
+        {
+            signatures_->generateQuerySignatures(dev_query_).wait();
+            queue_.wait_and_throw();
+
+            return GraphBatchStats{
+                static_cast<std::uint32_t>(dev_query_.num_graphs),
+                static_cast<std::size_t>(dev_query_.total_nodes),
+                static_cast<std::size_t>(dev_query_.total_edges),
+                signatures_->getQuerySignatureAllocationSize()};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("generate_query_signatures failed: ") + e.what());
+        }
+    }
+
+    GraphBatchStats NativePipeline::generate_data_signatures()
+    {
+        try
+        {
+            signatures_->generateDataSignatures(dev_data_).wait();
+            queue_.wait_and_throw();
+
+            return GraphBatchStats{
+                static_cast<std::uint32_t>(dev_data_.num_graphs),
+                static_cast<std::size_t>(dev_data_.total_nodes),
+                static_cast<std::size_t>(dev_data_.total_edges),
+                signatures_->getDataSignatureAllocationSize()};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("generate_data_signatures failed: ") + e.what());
+        }
+    }
+
+    GraphBatchStats NativePipeline::refine_query_signatures(std::size_t view_size)
+    {
+        try
+        {
+            signatures_->refineQuerySignatures(dev_query_, view_size).wait();
+            queue_.wait_and_throw();
+
+            return GraphBatchStats{
+                static_cast<std::uint32_t>(dev_query_.num_graphs),
+                static_cast<std::size_t>(dev_query_.total_nodes),
+                static_cast<std::size_t>(dev_query_.total_edges),
+                signatures_->getQuerySignatureAllocationSize()};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("refine_query_signatures failed: ") + e.what());
+        }
+    }
+
+    GraphBatchStats NativePipeline::refine_data_signatures(std::size_t view_size)
+    {
+        try
+        {
+            signatures_->refineDataSignatures(dev_data_, view_size).wait();
+            queue_.wait_and_throw();
+
+            return GraphBatchStats{
+                static_cast<std::uint32_t>(dev_data_.num_graphs),
+                static_cast<std::size_t>(dev_data_.total_nodes),
+                static_cast<std::size_t>(dev_data_.total_edges),
+                signatures_->getDataSignatureAllocationSize()};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("refine_data_signatures failed: ") + e.what());
+        }
+    }
+
+    FilterCandidatesStats NativePipeline::filter_candidates()
+    {
+        try
+        {
+            auto event = sigmo::isomorphism::filter::filterCandidates(
+                queue_,
+                dev_query_,
+                dev_data_,
+                *signatures_,
+                *candidates_);
+
+            event.wait();
+            queue_.wait_and_throw();
+
+            const std::size_t total_candidates =
+                count_candidates_on_device(queue_, *candidates_);
+
+            return FilterCandidatesStats{
+                static_cast<std::uint32_t>(dev_query_.num_graphs),
+                static_cast<std::uint32_t>(dev_data_.num_graphs),
+                static_cast<std::size_t>(dev_query_.total_nodes),
+                static_cast<std::size_t>(dev_data_.total_nodes),
+                total_candidates,
+                static_cast<std::size_t>(candidates_->getAllocationSize())};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("filter_candidates failed: ") + e.what());
+        }
+    }
+
+    RefineCandidatesStats NativePipeline::refine_candidates()
+    {
+        try
+        {
+            auto event = sigmo::isomorphism::filter::refineCandidates(
+                queue_,
+                dev_query_,
+                dev_data_,
+                *signatures_,
+                *candidates_);
+
+            event.wait();
+            queue_.wait_and_throw();
+
+            const std::size_t total_candidates =
+                count_candidates_on_device(queue_, *candidates_);
+
+            return RefineCandidatesStats{
+                static_cast<std::uint32_t>(dev_query_.num_graphs),
+                static_cast<std::uint32_t>(dev_data_.num_graphs),
+                static_cast<std::size_t>(dev_query_.total_nodes),
+                static_cast<std::size_t>(dev_data_.total_nodes),
+                total_candidates,
+                static_cast<std::size_t>(candidates_->getAllocationSize())};
+        }
+        catch (const std::exception &e)
+        {
+            throw DeviceRuntimeError(
+                std::string("refine_candidates failed: ") + e.what());
+        }
+    }
+
+    JoinCandidatesStats NativePipeline::join_candidates(bool find_first)
+    {
+        JoinCandidatesStats stats{};
+        std::size_t num_matches = 0;
+        double elapsed_ms = 0.0;
+
+        constexpr std::size_t max_capacity = 50000000;
+
+        sigmo::types::MatchPair *d_buffer =
+            sycl::malloc_device<sigmo::types::MatchPair>(max_capacity, queue_);
+
+        std::size_t *d_count =
+            sycl::malloc_device<std::size_t>(1, queue_);
+
+        std::size_t *d_num_matches =
+            sycl::malloc_shared<std::size_t>(1, queue_);
+
+        if (!d_buffer || !d_count || !d_num_matches)
+        {
+            if (d_buffer)
+                sycl::free(d_buffer, queue_);
+            if (d_count)
+                sycl::free(d_count, queue_);
+            if (d_num_matches)
+                sycl::free(d_num_matches, queue_);
+
+            throw OutOfDeviceMemoryError(
+                "Unable to allocate join output buffers");
+        }
+
+        try
+        {
+            queue_.fill(d_count, std::size_t(0), 1).wait();
+            d_num_matches[0] = 0;
+
+            sigmo::types::MatchResultsDevice out_results{
+                d_buffer,
+                d_count,
+                max_capacity};
+
+            gmcr_->generateGMCR(dev_query_, dev_data_, *candidates_);
+            queue_.wait_and_throw();
+
+            auto gmcr_dev = gmcr_->getGMCRDevice();
+
+            if (gmcr_dev.total_query_indices > 0)
+            {
+                auto start = std::chrono::high_resolution_clock::now();
+
+                sigmo::isomorphism::join::joinCandidates(
+                    queue_,
+                    dev_query_,
+                    dev_data_,
+                    *candidates_,
+                    *gmcr_,
+                    out_results,
+                    d_num_matches,
+                    find_first);
+
+                queue_.wait_and_throw();
+
+                auto end = std::chrono::high_resolution_clock::now();
+
+                elapsed_ms =
+                    std::chrono::duration<double, std::milli>(end - start).count();
+            }
+
+            num_matches = d_num_matches[0];
+
+            stats.num_matches = num_matches;
+            stats.execution_time = elapsed_ms;
+            stats.total_query_graph = static_cast<std::uint32_t>(dev_query_.num_graphs);
+            stats.total_data_graph = static_cast<std::uint32_t>(dev_data_.num_graphs);
+
+            std::size_t actual_match_count = 0;
+            queue_.memcpy(&actual_match_count, d_count, sizeof(std::size_t)).wait();
+
+            const std::size_t safe_match_count =
+                std::min(actual_match_count, max_capacity);
+
+            if (safe_match_count > 0)
+            {
+                std::vector<sigmo::types::MatchPair> h_matches(safe_match_count);
+
+                queue_.memcpy(
+                          h_matches.data(),
+                          d_buffer,
+                          safe_match_count * sizeof(sigmo::types::MatchPair))
+                    .wait();
+
+                for (const auto &match : h_matches)
+                {
+                    stats.matches_dict[match.query_id].push_back(match.data_id);
+                }
+            }
+
+            sycl::free(d_buffer, queue_);
+            sycl::free(d_count, queue_);
+            sycl::free(d_num_matches, queue_);
+
+            return stats;
+        }
+        catch (...)
+        {
+            sycl::free(d_buffer, queue_);
+            sycl::free(d_count, queue_);
+            sycl::free(d_num_matches, queue_);
+            throw;
+        }
+    }
+
+    std::size_t NativePipeline::total_query_nodes() const
+    {
+        return static_cast<std::size_t>(dev_query_.total_nodes);
+    }
+
+    std::size_t NativePipeline::total_data_nodes() const
+    {
+        return static_cast<std::size_t>(dev_data_.total_nodes);
+    }
+
+    std::size_t NativePipeline::total_query_graphs() const
+    {
+        return static_cast<std::size_t>(dev_query_.num_graphs);
+    }
+
+    std::size_t NativePipeline::total_data_graphs() const
+    {
+        return static_cast<std::size_t>(dev_data_.num_graphs);
     }
 
 } // namespace sigmo_python
