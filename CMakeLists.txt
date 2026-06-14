@@ -33,7 +33,22 @@ target_include_directories(_core
     PRIVATE
         ${DPCTL_PYBIND11_INCLUDE_DIR}
         cpp/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/sigmo/library/include  
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/sigmo/library/include 
+    
+)
+
+# Keep the binding aligned with the native SIGMo build.
+# SIGMO_ALLOCATION=1 makes SIGMo's device::memory::malloc use device USM
+# instead of falling back to host allocation. This is required for structures
+# such as signatures and GMCR buffers to have the same memory placement and
+# performance behavior as the original C++ pipeline.
+target_compile_definitions(_core
+    PRIVATE
+        SIGMO_ALLOCATION=1
+)
+target_compile_definitions(_core
+    PRIVATE
+        SIGMO_ALLOCATION=1
 )
 
 target_compile_options(_core PRIVATE
