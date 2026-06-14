@@ -604,6 +604,18 @@ namespace sigmo_python
         return stats;
     }
 
+    // Costruisce il contesto nativo persistente del binding.
+    //
+    // I wrapper definiti in precedenza nel file sono step-oriented: convertono i
+    // grafi ricevuti da Python, creano le strutture SIGMo richieste per quella
+    // singola chiamata e poi le rilasciano. Questo era adatto alla fase iniziale
+    // del progetto, per esporre e testare separatamente ogni kernel.
+    //
+    // NativePipeline e' invece il percorso pensato per il funzionamento ottimale
+    // del binding: i grafi query/data vengono convertiti e caricati sul device
+    // una sola volta; Signature, Candidates e GMCR vengono allocati una volta e
+    // riutilizzati lungo tutta la pipeline. In questo modo il binding Python
+    // rispecchia meglio il modello di esecuzione della pipeline C++ nativa.
     NativePipeline::NativePipeline(
         sycl::queue queue,
         const std::vector<HostCSRGraphInput> &query_graphs,
@@ -669,6 +681,12 @@ namespace sigmo_python
         }
     }
 
+    // Rilascia le strutture device-side possedute dalla pipeline persistente.
+    //
+    // Il distruttore non deve propagare eccezioni verso Python; per questo il
+    // cleanup e' protetto da try/catch. Il flag device_graphs_valid_ evita di
+    // tentare la distruzione di grafi non inizializzati in caso di errore durante
+    // la costruzione della pipeline.
     NativePipeline::~NativePipeline()
     {
         try
@@ -767,6 +785,12 @@ namespace sigmo_python
         }
     }
 
+    // Esegue il filtro dei candidati usando strutture device-side persistenti.
+    //
+    // A differenza del wrapper step-oriented filter_candidates(), qui non viene
+    // ricreato alcun DeviceBatchedCSRGraph: la funzione opera direttamente sui
+    // grafi caricati nel costruttore della NativePipeline e aggiorna la struttura
+    // Candidates mantenuta viva nel contesto nativo.
     FilterCandidatesStats NativePipeline::filter_candidates()
     {
         try
@@ -799,6 +823,12 @@ namespace sigmo_python
         }
     }
 
+    // Esegue il refine dei candidati nel percorso ottimizzato del binding.
+    //
+    // La funzione usa le signatures e la matrice Candidates gia' allocate nella
+    // NativePipeline. Dopo il kernel, il numero di candidati residui viene contato
+    // tramite count_candidates_on_device(), evitando la copia completa della
+    // matrice dei candidati verso host.
     RefineCandidatesStats NativePipeline::refine_candidates()
     {
         try
@@ -831,6 +861,17 @@ namespace sigmo_python
         }
     }
 
+    // Esegue la fase finale di mapping/join usando lo stato nativo persistente.
+    //
+    // La funzione genera il GMCR a partire dai candidati raffinati e poi invoca
+    // il kernel joinCandidates di SIGMo. Il numero totale di match viene sempre
+    // calcolato in modo esatto dal kernel.
+    //
+    // Per risultati molto grandi, il binding non materializza tutte le coppie
+    // query-data in un dizionario Python: questa scelta evita che la conversione
+    // dell'output domini il tempo di esecuzione e mantiene comunque corretto il
+    // conteggio totale dei match. Per risultati piccoli, invece, matches_dict
+    // viene popolato normalmente per preservare il comportamento interattivo.
     JoinCandidatesStats NativePipeline::join_candidates(bool find_first)
     {
         auto total_start = std::chrono::high_resolution_clock::now();
@@ -839,10 +880,13 @@ namespace sigmo_python
         std::size_t num_matches = 0;
         double elapsed_ms = 0.0;
 
-        /*
-         * We do not materialize huge match sets into Python.
-         * The total number of matches is still computed exactly through d_num_matches.
-         */
+        // Limite di materializzazione lato Python.
+        //
+        // Il backend SIGMo puo' produrre milioni di match. In questi casi il risultato
+        // principale per benchmark e summary e' il conteggio totale, mentre la
+        // materializzazione completa delle coppie in oggetti Python avrebbe un costo
+        // sproporzionato. La soglia mantiene completo l'output per casi piccoli e
+        // compatto per casi grandi.
         constexpr std::size_t MATCH_MATERIALIZATION_LIMIT = 100000;
         constexpr std::size_t max_capacity = MATCH_MATERIALIZATION_LIMIT;
 

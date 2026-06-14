@@ -159,6 +159,28 @@ namespace sigmo_python
         std::size_t &num_matches,
         bool find_first = true);
 
+    /**
+     * @brief Pipeline nativa persistente per eseguire SIGMo dal binding Python
+     *        senza ricreare le strutture device-side a ogni fase.
+     *
+     * Le funzioni dichiarate sopra espongono singoli step della libreria SIGMo
+     * e sono state mantenute per compatibilita' e per documentare il lavoro
+     * svolto durante lo sviluppo del progetto. In quel modello ogni wrapper
+     * riceve grafi host-side, li converte, crea temporaneamente le strutture
+     * device-side richieste dalla libreria e poi le distrugge al termine della
+     * chiamata.
+     *
+     * Questa classe rappresenta invece il percorso ottimizzato del binding:
+     * query graph, data graph, signatures, candidates e GMCR vengono allocati
+     * una sola volta e riutilizzati lungo l'intera pipeline. In questo modo il
+     * comportamento si avvicina alla pipeline C++ nativa di SIGMo ed evita costi
+     * ripetuti di conversione, upload su GPU e riallocazione delle strutture
+     * interne.
+     *
+     * La classe non reimplementa gli algoritmi SIGMo: mantiene un approccio
+     * thin-binding e si limita a gestire in modo persistente lo stato nativo
+     * necessario per eseguire generate, filter, refine e join dal lato Python.
+     */
     class NativePipeline
     {
     public:
@@ -193,16 +215,27 @@ namespace sigmo_python
         std::size_t total_data_graphs() const;
 
     private:
+        // Queue SYCL usata da tutte le fasi della pipeline nativa persistente.
         sycl::queue queue_;
 
+        // Batch di grafi gia' caricati sul device. Restano validi per tutta
+        // la vita della NativePipeline, evitando upload ripetuti.
         sigmo::DeviceBatchedCSRGraph dev_query_{};
         sigmo::DeviceBatchedCSRGraph dev_data_{};
 
+        // Strutture native SIGMo mantenute vive tra gli step della pipeline.
+        // Sono allocate una sola volta e aggiornate progressivamente da
+        // generate/filter/refine/join.
         std::unique_ptr<sigmo::signature::Signature<>> signatures_;
         std::unique_ptr<sigmo::candidates::Candidates> candidates_;
         std::unique_ptr<sigmo::isomorphism::mapping::GMCR> gmcr_;
 
+        // Padding usato per rendere leggermente piu' robuste le allocazioni
+        // native rispetto alle dimensioni effettive dei batch.
         std::size_t memory_padding_{16};
+
+        // Flag di sicurezza usato dal distruttore per liberare i grafi device
+        // solo se l'upload iniziale e' avvenuto correttamente.
         bool device_graphs_valid_{false};
     };
 } // namespace sigmo_python

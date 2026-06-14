@@ -84,14 +84,21 @@ PYBIND11_MODULE(_core, m)
         auto event = self.generateGMCR(query, data, cand);
         event.wait(); }, py::arg("query"), py::arg("data"), py::arg("candidates"));
 
+    // Binding Python della pipeline nativa persistente.
+    //
+    // Le funzioni legacy esposte nel modulo permettono ancora di richiamare i
+    // singoli wrapper C++ separatamente, come fatto nella fase di sviluppo del
+    // progetto. NativePipeline e' invece l'interfaccia ottimizzata usata dalla
+    // PipelineContext Python: mantiene vive le strutture SIGMo native tra una
+    // fase e l'altra e riduce il costo di orchestrazione del binding.
     py::class_<sigmo_python::NativePipeline>(m, "NativePipeline")
-    .def(
-        py::init([](
-            py::object q_obj,
-            const py::list& query_graphs_py,
-            const py::list& data_graphs_py,
-            std::size_t memory_padding
-        ) {
+        .def(
+            py::init([](
+                         py::object q_obj,
+                         const py::list &query_graphs_py,
+                         const py::list &data_graphs_py,
+                         std::size_t memory_padding)
+                     {
             sycl::queue q = py::cast<sycl::queue>(q_obj);
 
             auto query_batch = parse_graph_batch(query_graphs_py);
@@ -102,32 +109,29 @@ PYBIND11_MODULE(_core, m)
                 query_batch,
                 data_batch,
                 memory_padding
-            );
-        }),
-        py::arg("queue"),
-        py::arg("query_graphs"),
-        py::arg("data_graphs"),
-        py::arg("memory_padding") = 16
-    )
-    .def("generate_query_signatures", [](sigmo_python::NativePipeline& self) {
-        return to_python_dict(self.generate_query_signatures());
-    })
-    .def("generate_data_signatures", [](sigmo_python::NativePipeline& self) {
-        return to_python_dict(self.generate_data_signatures());
-    })
-    .def("refine_query_signatures", [](sigmo_python::NativePipeline& self, std::size_t view_size) {
+            ); }),
+            py::arg("queue"),
+            py::arg("query_graphs"),
+            py::arg("data_graphs"),
+            py::arg("memory_padding") = 16)
+        .def("generate_query_signatures", [](sigmo_python::NativePipeline &self)
+             { return to_python_dict(self.generate_query_signatures()); })
+        .def("generate_data_signatures", [](sigmo_python::NativePipeline &self)
+             { return to_python_dict(self.generate_data_signatures()); })
+        .def("refine_query_signatures", [](sigmo_python::NativePipeline &self, std::size_t view_size)
+             {
         py::dict out = to_python_dict(self.refine_query_signatures(view_size));
         out["scope"] = "query";
         out["view_size"] = view_size;
-        return out;
-    }, py::arg("view_size"))
-    .def("refine_data_signatures", [](sigmo_python::NativePipeline& self, std::size_t view_size) {
+        return out; }, py::arg("view_size"))
+        .def("refine_data_signatures", [](sigmo_python::NativePipeline &self, std::size_t view_size)
+             {
         py::dict out = to_python_dict(self.refine_data_signatures(view_size));
         out["scope"] = "data";
         out["view_size"] = view_size;
-        return out;
-    }, py::arg("view_size"))
-    .def("filter_candidates", [](sigmo_python::NativePipeline& self) {
+        return out; }, py::arg("view_size"))
+        .def("filter_candidates", [](sigmo_python::NativePipeline &self)
+             {
         auto stats = self.filter_candidates();
 
         py::dict out;
@@ -137,9 +141,9 @@ PYBIND11_MODULE(_core, m)
         out["total_data_nodes"] = stats.total_data_nodes;
         out["candidates_count"] = stats.total_candidates;
         out["allocated_bytes"] = stats.allocated_bytes;
-        return out;
-    })
-    .def("refine_candidates", [](sigmo_python::NativePipeline& self) {
+        return out; })
+        .def("refine_candidates", [](sigmo_python::NativePipeline &self)
+             {
         auto stats = self.refine_candidates();
 
         py::dict out;
@@ -149,9 +153,9 @@ PYBIND11_MODULE(_core, m)
         out["total_data_nodes"] = stats.total_data_nodes;
         out["candidates_count"] = stats.total_candidates;
         out["allocated_bytes"] = stats.allocated_bytes;
-        return out;
-    })
-    .def("join_candidates", [](sigmo_python::NativePipeline& self, bool find_first) {
+        return out; })
+        .def("join_candidates", [](sigmo_python::NativePipeline &self, bool find_first)
+             {
         auto stats = self.join_candidates(find_first);
 
         py::dict out;
@@ -160,12 +164,11 @@ PYBIND11_MODULE(_core, m)
         out["num_query_graph"] = stats.total_query_graph;
         out["num_data_graph"] = stats.total_data_graph;
         out["matches_dict"] = stats.matches_dict;
-        return out;
-    }, py::arg("find_first") = true)
-    .def("total_query_nodes", &sigmo_python::NativePipeline::total_query_nodes)
-    .def("total_data_nodes", &sigmo_python::NativePipeline::total_data_nodes)
-    .def("total_query_graphs", &sigmo_python::NativePipeline::total_query_graphs)
-    .def("total_data_graphs", &sigmo_python::NativePipeline::total_data_graphs);
+        return out; }, py::arg("find_first") = true)
+        .def("total_query_nodes", &sigmo_python::NativePipeline::total_query_nodes)
+        .def("total_data_nodes", &sigmo_python::NativePipeline::total_data_nodes)
+        .def("total_query_graphs", &sigmo_python::NativePipeline::total_query_graphs)
+        .def("total_data_graphs", &sigmo_python::NativePipeline::total_data_graphs);
 
     m.def("generate_csr_signatures", [](sycl::queue q, const py::list &graphs_py, sigmo::signature::Signature<> &sig, const std::string &scope)
           {
