@@ -8,6 +8,12 @@ from rdkit import Chem
 
 CSRGraph = Dict[str, Any]
 
+SIGMO_NATIVE_ATOM_LABELS = { "N": 0, "Cl": 1, "*": 2, "Br": 3, "I": 4, "P": 5, "H": 6, "O": 7, "C": 8, "S": 9, "F": 10, } 
+
+def _atom_label(atom: Chem.Atom) -> int: 
+    """ Return the node label used by the native SIGMo preprocessing script. 
+    Unknown symbols intentionally fall back to 0, matching smile2graph.py. """ 
+    return SIGMO_NATIVE_ATOM_LABELS.get(atom.GetSymbol(), 0)
 
 def make_csr_graph(
     row_offsets: Sequence[int],
@@ -100,18 +106,23 @@ def rdkit_mol_to_csr(
     """
     Convert an RDKit Mol object into a SIGMo-compatible CSR graph.
 
-    Notes:
-        The resulting CSR graph is a structural representation. It does not
-        preserve the full SMARTS semantics used internally by RDKit. Atom labels
-        are currently encoded as atomic numbers, and bond labels are encoded as
-        backend-safe integer bond labels.
+    The CSR construction reproduces the ordering used by the native SIGMo
+    preprocessing workflow:
+
+    1. RDKit bonds are inserted in their original order;
+    2. each undirected edge is emitted once following node order and
+       neighbour insertion order;
+    3. the CSR is filled by inserting both directions of every emitted edge
+       in that global edge order, as done by SIGMo's C++ reader.
     """
     if mol is None:
         raise ValueError("Invalid RDKit Mol: None.")
 
     num_nodes = mol.GetNumAtoms()
-    adj: List[List[int]] = [[] for _ in range(num_nodes)]
-    node_labels = [atom.GetAtomicNum() for atom in mol.GetAtoms()]
+    node_labels = [_atom_label(atom) for atom in mol.GetAtoms()]
+
+    # Keep RDKit bond insertion order for each endpoint.
+    insertion_adj: List[List[int]] = [[] for _ in range(num_nodes)]
     edge_labels_map: Dict[Tuple[int, int], int] = {}
 
     for bond in mol.GetBonds():
@@ -119,21 +130,55 @@ def rdkit_mol_to_csr(
         v = bond.GetEndAtomIdx()
         label = _bond_label(bond)
 
-        adj[u].append(v)
-        adj[v].append(u)
+        insertion_adj[u].append(v)
+        insertion_adj[v].append(u)
 
         edge_labels_map[(u, v)] = label
         edge_labels_map[(v, u)] = label
 
-    row_offsets = [0]
-    column_indices: List[int] = []
-    edge_labels: List[int] = []
+    # Reproduce the edge sequence emitted by the native preprocessing path:
+    # visit nodes in index order and emit each undirected edge only once.
+    native_edge_order: List[Tuple[int, int, int]] = []
+    seen_edges: set[Tuple[int, int]] = set()
 
-    for node in range(num_nodes):
-        for neigh in sorted(adj[node]):
-            column_indices.append(neigh)
-            edge_labels.append(edge_labels_map[(node, neigh)])
-        row_offsets.append(len(column_indices))
+    for u in range(num_nodes):
+        for v in insertion_adj[u]:
+            edge_key = (u, v) if u < v else (v, u)
+
+            if edge_key in seen_edges:
+                continue
+
+            seen_edges.add(edge_key)
+            native_edge_order.append(
+                (u, v, edge_labels_map[(u, v)])
+            )
+
+    # Same CSR fill strategy used by SIGMo's IntermediateGraph::toCSRGraph().
+    row_offsets = [0] * (num_nodes + 1)
+
+    for u, v, _ in native_edge_order:
+        row_offsets[u + 1] += 1
+        row_offsets[v + 1] += 1
+
+    for node in range(1, len(row_offsets)):
+        row_offsets[node] += row_offsets[node - 1]
+
+    total_directed_edges = row_offsets[-1]
+
+    column_indices = [0] * total_directed_edges
+    edge_labels = [0] * total_directed_edges
+    current_positions = [0] * num_nodes
+
+    for u, v, label in native_edge_order:
+        u_pos = row_offsets[u] + current_positions[u]
+        column_indices[u_pos] = v
+        edge_labels[u_pos] = label
+        current_positions[u] += 1
+
+        v_pos = row_offsets[v] + current_positions[v]
+        column_indices[v_pos] = u
+        edge_labels[v_pos] = label
+        current_positions[v] += 1
 
     return make_csr_graph(
         row_offsets,
@@ -144,6 +189,7 @@ def rdkit_mol_to_csr(
         name,
         **metadata,
     )
+
 
 
 def load_molecules(
@@ -361,7 +407,19 @@ def _bond_label(bond: Chem.Bond) -> int:
 
     This makes the CSR representation less chemically expressive than RDKit's
     full SMARTS semantics, but keeps the SIGMo backend stable.
+
+    Alternative version that respects SIGMo native parser:
+
+    bond_type = bond.GetBondType() 
+    if bond_type == Chem.rdchem.BondType.AROMATIC: 
+        return 4 
+    return int(bond.GetBondTypeAsDouble())
     """
+    bond_type = bond.GetBondType() 
+
+    if bond_type == Chem.rdchem.BondType.AROMATIC: 
+        return 4 
+    
     return int(bond.GetBondTypeAsDouble())
 
 

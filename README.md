@@ -109,15 +109,25 @@ ctx.join(find_first=True)
 
 ## Notes on chemistry representation
 
-Bond labels are currently obtained with:
+RDKit is used to parse SMILES and SMARTS inputs and to expose their molecular graph structure. Before graphs are passed to the SIGMo backend, the Python interface converts them into a CSR representation aligned with the native SIGMo preprocessing workflow.
 
-```python
-int(bond.GetBondTypeAsDouble())
-```
+In particular, the conversion preserves:
 
-This maps aromatic bonds to `1` because `int(1.5) = 1`.
+the native SIGMo atom-label encoding;
+the native bond-label convention;
+the original adjacency ordering used by the native CSR construction.
 
-This choice reduces chemical expressiveness, but keeps the representation compatible with the current SIGMo backend and avoids unsupported labels that previously caused native C++/SYCL crashes.
+Bond labels follow the SIGMo convention:
+
+UNSPECIFIED -> 0
+SINGLE      -> 1
+DOUBLE      -> 2
+TRIPLE      -> 3
+AROMATIC    -> 4
+
+Aromatic bonds are therefore kept distinct from single bonds. This is important because RDKit represents aromatic bonds with bond order 1.5; directly applying int(bond.GetBondTypeAsDouble()) would incorrectly map them to 1.
+
+RDKit is used only for input parsing and graph construction; candidate filtering, refinement, and subgraph-isomorphism matching remain executed by the original SIGMo C++/SYCL backend.
 
 ---
 

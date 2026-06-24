@@ -880,15 +880,7 @@ namespace sigmo_python
         std::size_t num_matches = 0;
         double elapsed_ms = 0.0;
 
-        // Limite di materializzazione lato Python.
-        //
-        // Il backend SIGMo puo' produrre milioni di match. In questi casi il risultato
-        // principale per benchmark e summary e' il conteggio totale, mentre la
-        // materializzazione completa delle coppie in oggetti Python avrebbe un costo
-        // sproporzionato. La soglia mantiene completo l'output per casi piccoli e
-        // compatto per casi grandi.
-        constexpr std::size_t MATCH_MATERIALIZATION_LIMIT = 100000;
-        constexpr std::size_t max_capacity = MATCH_MATERIALIZATION_LIMIT;
+        constexpr std::size_t max_capacity = 50000000;
 
         auto alloc_start = std::chrono::high_resolution_clock::now();
 
@@ -972,28 +964,25 @@ namespace sigmo_python
 
             auto materialization_start = std::chrono::high_resolution_clock::now();
 
-            if (num_matches <= MATCH_MATERIALIZATION_LIMIT)
+            std::size_t actual_match_count = 0;
+            queue_.memcpy(&actual_match_count, d_count, sizeof(std::size_t)).wait();
+
+            const std::size_t safe_match_count =
+                std::min(actual_match_count, max_capacity);
+
+            if (safe_match_count > 0)
             {
-                std::size_t actual_match_count = 0;
-                queue_.memcpy(&actual_match_count, d_count, sizeof(std::size_t)).wait();
+                std::vector<sigmo::types::MatchPair> h_matches(safe_match_count);
 
-                const std::size_t safe_match_count =
-                    std::min(actual_match_count, max_capacity);
+                queue_.memcpy(
+                            h_matches.data(),
+                            d_buffer,
+                            safe_match_count * sizeof(sigmo::types::MatchPair))
+                    .wait();
 
-                if (safe_match_count > 0)
+                for (const auto &match : h_matches)
                 {
-                    std::vector<sigmo::types::MatchPair> h_matches(safe_match_count);
-
-                    queue_.memcpy(
-                              h_matches.data(),
-                              d_buffer,
-                              safe_match_count * sizeof(sigmo::types::MatchPair))
-                        .wait();
-
-                    for (const auto &match : h_matches)
-                    {
-                        stats.matches_dict[match.query_id].push_back(match.data_id);
-                    }
+                    stats.matches_dict[match.query_id].push_back(match.data_id);
                 }
             }
 

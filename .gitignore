@@ -38,3 +38,10 @@ old_native_backups/
 external/CMakeCache.txt
 external/CMakeFiles/
 external/build/
+
+# Generated benchmark artifacts
+/analysis/
+/results/
+/benchmarks/native_dat_cache/
+/benchmarks/results/
+/benchmarks/sigmo_results.csv
